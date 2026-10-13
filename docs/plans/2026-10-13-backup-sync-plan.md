@@ -161,21 +161,22 @@ daily/YYYY-MM-DD.todo.md
 
 ## M2 · 客户端面板（先逆向契约，再写 UI）
 
-### Task 6: 逆向 `__ModuleLoader__` 契约 ★全项目最大未知
+### Task 6: 逆向 `__ModuleLoader__` 契约 ✅ 已完成 ★全项目最大未知
 
-**Files:**
-- Read: `C:\Users\x\.dsh\profiles\desktop\node_modules\dsh-context\lib\client.js`
-- Read: `...\@michengai\dsh-skills-manager\lib\client.js`（更小，更好读）
-- Output: `<仓库目录>\docs\notes\module-loader-contract.md`
+**产出**：`docs/notes/module-loader-contract.md`（12 节，全部结论带出处行号）+ `docs/notes/dsh-slot-catalog.json`（内核自带 90 条槽位目录，225 KB）。
 
-**必须回答的问题（逐条给出证据行号）：**
-1. `factory` 的返回值/副作用是什么？模块如何导出 `apply` / `inject` / `name`？
-2. `e(...)` 能 require 哪些 id？哪些来自 boot entries，哪些来自共享库？
-3. 面板列表（与 Plugins、Automation tasks 同级）注册在哪个 slot？API 签名是什么？
-4. 中央栏整页面板注册在哪个 slot？
-5. `inject` 里**绝对不能写**的服务名是什么？（写错 → 条目 pending → 触发「应用无法使用」致命恢复框；现存的客户端服务是 `slots / locale / theme / configForms / connection / remote / sessions / conversation`）
+**五个问题的答案：**
 
-**方法:** 优先读 `.map` 文件或未压缩源码；若只有压缩产物，用 `prettier`/`js-beautify` 展开后再读。**不要靠猜。**
+1. **模块导出**：`factory(require)` 的**返回值就是 exports**，宿主读 `exports.apply` / `exports.inject`。真实范例 `dsh-client-ui-plugin-manager/lib/client.js:3778-3782` 写 `exports.apply = apply; exports.inject = inject; return module.exports;`；官方模板用对象字面量 `{ inject:['slots'], apply(ctx){} }`，等价。执行 bundle **只注册 factory**，模块体副作用（含 CSS 注入）在**物化**时才跑。
+2. **`require` 能拿到什么**：解析链 = 平台种子表 → `loadCache` → 已注册 factory（同步物化）→ 否则抛错。**种子表只有 9 项**：`react` / `react/jsx-runtime` / `react-dom` / `react-dom/client` / `@deepseek-ai/cordis` / `@deepseek-ai/dsh-client-store` / `@deepseek-ai/dsh-client-ui-slots` / `@deepseek-ai/dsh-client-ui-primitives` / `@deepseek-ai/dsh-client-ui-dockkit`。其余 `@deepseek-ai/*` 必须先作为 boot 条目到达。`dsh.client.inject` 里**不是 boot 条目的模块会被静默跳过**（源码 `client.js:656-659` 的 `if (dependency !== void 0)`）→ 404 属正常，不是缺依赖。
+3. **面板列表槽位** = `sidebar.panellist`（kind `list`, scope `root`），注册选项 `{id 必需, order, label: string|(()=>string)}`，组件收到 `{size, active}` 且**渲染的是图标**。`label` 给普通字符串即可（侧边栏用 `resolveSlotLabel(options.label) ?? id`，**不读 `locale`**）。
+4. **中央栏面板槽位** = `main`（kind `keyed`, scope `root`），注册选项 `{key 必需}`。配对机制是文档原文「**Each list id addresses the matching main panel**」→ 侧边栏按钮用自己的 `id` 调 `ctx.layout.selectPanel(id)`，主列按同一字符串取 `main` 的 key。`conversation` 已被内置对话占用，`replaceRisk: shadows-shipped-ui`。
+5. **服务名红线**：`inject` 写不存在的服务 → 条目 pending → `web boot: N entries did not activate` → 致命恢复框。本机**不存在** `settingsScope`（`dsh-ping` 1.9.0 因此必崩）。**本插件只写 `['slots']`**，其余服务用 `ctx.get()` 懒解析。
+
+**关键方法（可复用）**：内核源码已解包在 `<内核解包目录>\dsh\node_modules\@deepseek-ai\`，其中 `dsh-client-modules`、`dsh-client-ui-sidebar`、`dsh-client-ui-plugin-manager` 等都是**未压缩**的（带 JSDoc 注释和源码行号），直接读即可，不必展开压缩产物。
+新增工具：`<工具目录>\strings.mjs <file> <regex> [before] [after]`（从单行压缩 bundle 里带上下文抽字符串）、`<工具目录>\extract-slot-catalog.mjs`（抽出内核 90 条槽位目录）。
+
+**实测核对**：`@deepseek-ai/dsh-client-ui-sidebar` 与 `@deepseek-ai/dsh-client-ui-layout` 均确认为 boot 条目（`boot-grep.mjs`，75 条中命中 2 条），故可安全写进 `dsh.client.inject`。
 
 ---
 
@@ -183,10 +184,15 @@ daily/YYYY-MM-DD.todo.md
 
 **Files:**
 - Create: `lib/client.js`
+- Modify: `package.json`（加 `exports["./client"]` + `dsh.client`）
 
-**要求:** 手写 `window.__ModuleLoader__.load({ id:'dsh-backup-sync', factory })` 外壳，工厂体内用 `React.createElement`（**不用 JSX**）。先用最小内容验证「能被加载、能注册一个 slot」，再填 UI。
+**要求（契约已明确，见 `docs/notes/module-loader-contract.md` §9）：** 手写
+`window.__ModuleLoader__.load({ id:'dsh-backup-sync', factory })`，工厂体内用 `React.createElement`（**不用 JSX**）。
+`dsh.client = { platform:'web', inject:['@deepseek-ai/dsh-client-ui-sidebar','@deepseek-ai/dsh-client-ui-layout'] }`。
+模块导出 `inject: ['slots']`，注册 `sidebar.panellist`（`id:'backup-sync'`，`label:'备份同步'`，内联 SVG 图标）与 `main`（`key:'backup-sync'`）。
+先用最小内容验证「能被加载、能注册两个 slot」，再填 UI。
 
-**验证:** 装进 dev profile → `GET /` 的 `__DSH_BOOT__` 里出现本插件条目 → 面板列表出现「备份同步」。
+**验证:** 装进 dev profile → `GET /` 的 `__DSH_BOOT__` 里出现本插件条目 → 面板列表出现「备份同步」→ 点击后主列切到本插件面板。
 
 ---
 

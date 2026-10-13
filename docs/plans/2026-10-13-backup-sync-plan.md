@@ -279,6 +279,111 @@ daily/YYYY-MM-DD.todo.md
 
 ---
 
+## M3.5 · 真机验收与缺陷修复（2026-10-13 夜，原计划外）
+
+一期功能齐了之后，真机跑动暴露出**三个原计划没预见的缺陷**和一个**关键运维事实**。全部已修并有回归测试。
+
+### 补课 1：凭据守卫 `lib/guard.js`（159 行，13 项测试）★安全底线
+
+**触发原因**：打包清单里出现了 `.npmrc`。查过内容只有 `store-dir=…`（54 B），没泄露；但它暴露了一个事实 —— **扫描器对凭据零过滤**。`.credentials.yaml`（明文 API key + DSH 会话密钥）没进包，纯粹是因为「恰好没有任何模块根覆盖 `dshHome` 根目录」。这种**靠巧合的安全**等于没有安全：以后任何人加一个根、或用户挪一次文件位置，明文密钥就会静默进包、再被推到云上。
+
+两道闸（命中一律**剔除文件**并记进 `result.credentials`，由界面显著提示，绝不静默跳过）：
+
+| 闸 | 位置 | 规则 | 代价 |
+|---|---|---|---|
+| 文件名闸 | `inspectPath(relPath)` | 23 个 basename（`.credentials.*`/`credentials.*`/`secrets.*`/`auth.json`/`github.token`/`.netrc`/`.git-credentials`/`id_rsa` 等）+ 7 个后缀（`.pem/.key/.pfx/.p12/.keystore/.jks/.ppk`） | 不看内容，零误报风险 |
+| 内容闸 | `inspectContentMatch(text)` | 10 条**高信号**规则：私钥文件头 / npm 令牌 / GitHub 令牌 / GitHub 细粒度令牌 / OpenAI 风格密钥 / AWS Access Key / Slack 令牌 / JWT / 带令牌的 git 地址 / 字面量 Bearer | 必然有误报，故只收真令牌形态 |
+
+体积上限 `MAX_GUARD_BYTES = 1 MiB`（凭据都是小文件，超限的只走文件名闸）。
+
+★ **一次真实误报，教训写进代码注释**：首版规则 `x-access-token:[^@\s/]+@` 把项目记忆里那句
+「凭据以 `https://x-access-token:<token>@github.com` 写入 git credential helper」的**字面量占位符**当成真令牌，
+直接把那份记忆文件挡在备份之外。修法是**凡是「密钥部分」都要求真实令牌的字符形态与长度**（`[A-Za-z0-9_-]{20,}`），
+占位符（`<...>`、`${...}`、`xxx`）一律不匹配；并把这两句占位符写进测试的良性样本表。
+真机复验：**0 个拦截**。
+
+★ 还加了**打码片段**：只报规则名，用户无法判断「这是占位符」还是「这是我的真令牌」；
+给出 `头6…尾2` 的片段，一眼可辨，同时 reason 字符串本身不成为新的泄露面。
+
+### 补课 2：UI 显示的是宿主原始计数 → 冲突裁决后数字不对（真机缺陷）
+
+**症状**：导入页点「全部采用归档」后，计数格仍显示「待裁决 1 / 导入 0」，二次确认弹窗写「将写入 没有任何差异」，
+**但点下去真的写了 1 个文件**。
+
+**根因**：`diff.js` 的 `counts` 里 `conflict` 是**独立键**，**不折算进** `import`/`keep`；
+而 `apply.js` 的 `counts.import` **是**包含「冲突裁决为归档」的那些文件的。界面直接渲染宿主的 `preview.counts`，
+于是「预览」与「实际写入」两套口径打架。
+
+**修法**：客户端新增纯函数 `effectiveCounts(preview, resolutions)` —— 拷贝一份 `preview.counts`，
+逐条读 `resolutions[c.key]`：`archive` → `import += 1`；`local` → `keep += 1`；其余 → `unresolved += 1`；
+最后 `counts.conflict = unresolved`（永不改宿主对象）。配套 `effectiveWriteCount(c) = import + delete`。
+8 项回归测试锁住。
+
+★ **同时锁住三条 UI 级不变量**：冲突永不预选；未裁决按保留本地处理且**没东西可写时「执行导入」保持禁用**；
+删除开关默认关闭，一旦打开文案立刻切成警告。
+
+### 补课 3：换目录备份后「历史版本」是空的（真机缺陷）
+
+**症状**：在输出目录里填了自定义目录、备份成功，切到「历史版本」点刷新 —— 空。再切回来，**看起来像备份丢了**。
+
+**两个原因叠加**：
+1. `POST /backup` **从不持久化** `outDir` —— 打完包一切换页签，客户端重新 `/state` 时不带 `outDir`，弹回默认目录；
+2. 「历史版本」的刷新按钮调 `load()` **不带参数**，把输入框里刚打的字丢了。
+
+**修法**：
+- `lib/routes.js`：只持久化**显式传进来**的 `outDir`（`requested !== '' && requested !== settings.outDir` 才写）。
+  **默认值绝不固化进 `settings.json`** —— 否则以后改默认目录，老用户永远拿不到新默认值。
+- `lib/client.js`：抽出 `requestOutDir(ui)`（空/空白 → `undefined`，让宿主走设置/默认值；否则 trim），
+  四处调用点全部改走它。**漏掉的那一处正是「历史版本」的刷新按钮** —— 所以另加一条**源码扫描测试**：
+  断言 `lib/client.js` 里不再出现手写的 `ui.outDir.trim() === ''` 三元表达式。
+
+### 关键运维事实：客户端热重载，**宿主半边不热重载**
+
+这一条坑掉了一整轮验收，必须记下来。
+
+| 半边 | 是否热重载 | 机制 / 证据 |
+|---|---|---|
+| `lib/client.js`（面板 UI） | ✅ 会 | `@deepseek-ai/dsh-client-hmr` 每 500 ms stat 每个图行的 bundle，变了就 `clientModules.rebuilt(id)` 并经 SSE `/plugins/events` 推 `{type:"rebuilt",id,rev}`；客户端 `entries.reload(id, rev)` → `invalidate` + `removeOwnedStyles` + `reconcile`。**实测：改完不刷新页面，新行为立刻出现。** |
+| `lib/index.js` / `lib/routes.js`（宿主） | ❌ 不会 | `@deepseek-ai/dsh-hmr` 的 `Config.ignored` 默认含 `**/node_modules`，且派发处 `isExcluded = url => url.startsWith("node:") \|\| url.includes("/node_modules/")` —— 插件经 `profiles/*/node_modules` 的 **junction** 加载，`/node_modules/` 命中即被排除；watcher 本身也 prune 掉 `**/node_modules`。唯一活重载路径 `reconcileProfilePatches`（`dsh-app-boot/lib/index.js:3468`）只由 `setBundleEnabled`/`setPluginEnabled` 驱动。 |
+
+**实测证据**：`touch` 掉 `lib/index.js`、`lib/routes.js`（真路径与经 `profiles/desktop/node_modules/…` 两条都试）后
+`POST /backup {outDir}` 仍返回 `settings.outDir = null`；`GET /state` 的 `scan` 键里**没有 `credentials`** ——
+说明跑着的宿主是 19:2x 的代码，只有客户端半边是最新的。
+
+**结论（写进验收纪律）**：**验宿主改动必须重启宿主**。桌面应用不能重启（它托管着当前会话，且启动失败会弹
+「DeepSeek Harness 无法使用」的致命恢复框、第三个按钮会把用户的 `cordis.patch.yml` 改名并重置 bundles），
+所以验收环境改为**另起一个独立 web 实例**：
+
+```
+dsh plugin --profile web add link:<仓库目录>   # 空壳 web profile，装完即用
+dsh web --port 19399 --no-open                                   # 与 19387 的桌面实例并存，互不干扰
+```
+注意 `dsh web` **已隐含 `--profile web`**，再写一次会报 `select a profile only once`。
+会话 cookie 用同一个 `~/.dsh/.credentials.yaml` 里的 secret，但 authority 换成 `127.0.0.1:19399`。
+
+（试过的另一条路 —— 把 `profiles/desktop` 整树复制到 D 盘独立 `DSH_HOME` —— **不可行**：
+系统 `LongPathsEnabled = 0`，而 pnpm 的 `.pnpm/<pkg>@<ver>/node_modules/<pkg>/…` 已经贴着 260 字符上限，
+目标路径一长就复制失败，实测 `.pnpm` 只进去 1 项。`profiles/web` 路径比 `desktop` 还短 4 字符，所以安全。）
+
+### 真机验收结果（2026-10-13 夜）
+
+**路由级（对 19399 的当前宿主，16/16 通过）**：`/backup` 自定义目录 → `settings.json` 已持久化 →
+`GET /state` 不带 `outDir` 仍指向它且历史列表就是那个目录 → `/verify` 逐文件重算通过 →
+`/import/preview` 返回 `{import:0,keep:0,delete:0,conflict:0,same:46,skip:4}` → `/settings` 可写可清空。
+
+**界面级 `step11.mjs`（对 19399，30→36 项）**：备份页 6 张卡片 / 默认勾选 5 个 / 对话默认不勾且带「本地专用 · 不上云」/
+汇总行「已选 5 个模块 · 50 个文件 · 436.5 KB」/ 二次确认弹窗逐项正确；
+**凭据守卫端到端**：真造 `.env`（文件名闸）+ `notes.md`（内容闸，GitHub 令牌形态）→ 界面出现红色提示
+「凭据守卫拦下 2 个文件」并逐条列出 `zz-guard-probe/.env —— 文件名属于凭据类（.env）`、
+`zz-guard-probe/notes.md —— 内容命中「GitHub 令牌」（片段 ghp_Ab…Cd）`，**打码片段不复述完整令牌**；
+删掉命中文件再刷新 → 提示消失（无误伤残留）；
+**自定义目录往返**：打字 → 备份 `dsh-sync-20261013-214124.tar.gz` → 切「历史版本」刷新**能看到它**（缺陷回归）；
+`settings.json` 确已持久化；历史行三按钮「校验 / 导入 / 复制路径」齐全，「校验」返回「逐文件重算哈希 50 个 · 不符 0 个」。
+
+**边车命名（真机核实）**：`<archive>.tar.gz`、`<archive>.tar.gz.sha256`、`<archive>.tar.gz.meta.json` —— 后缀在 `.tar.gz` **之后**。
+
+---
+
 ## M4 · 同步适配器（二期）
 
 ### Task 13: 同步可插拔

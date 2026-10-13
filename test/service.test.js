@@ -595,3 +595,67 @@ test('路由派发：备份 → 预览 → 导入 全链路走 HTTP 也能跑通
     });
   });
 });
+
+test('★ 备份到自定义目录后必须记住它 —— 否则刷新页面「历史版本」就空了（真机缺陷回归）', async () => {
+  await withFixture(async (fx) => {
+    await withTempDir('.tmp-out-', async (outDir) => {
+      const routes = buildRoutes({ get: () => undefined }, { resolveRoots: () => fx.roots });
+      const call = async (p, payload, method = 'POST') => {
+        const r = routes.find((x) => x.path === `${ROUTE_PREFIX}${p}`);
+        const res = await r.fetch(
+          method === 'GET'
+            ? new Request(`http://x${r.path}`)
+            : new Request(`http://x${r.path}`, { method: 'POST', body: JSON.stringify(payload) }),
+        );
+        return await res.json();
+      };
+
+      // 1) 用户把「备份目录」填成自定义目录并备份
+      const backup = await call('/backup', { moduleIds: MODULES, outDir });
+      assert.equal(backup.ok, true);
+      assert.equal(backup.archive.path.startsWith(outDir), true);
+
+      // 2) 刷新页面：客户端会重新 GET /state（不带 outDir）—— 必须仍指向那个自定义目录，
+      //    否则用户刚打完包，切到「历史版本」却是空的，会以为备份丢了。
+      const state = await call('/state', undefined, 'GET');
+      assert.equal(state.outDir, outDir);
+      assert.equal(state.settings.outDir, outDir);
+      assert.deepEqual(
+        state.archives.map((a) => a.name),
+        [backup.archive.name],
+      );
+
+      // 3) 落盘的设置里也要有（重启 DSH 后仍然记得）
+      assert.equal((await loadSettings(fx.roots)).outDir, outDir);
+    });
+  });
+});
+
+test('★ 没显式指定目录时，备份不许往 settings 里写东西（默认值不该被固化）', async () => {
+  await withFixture(async (fx) => {
+    await withTempDir('.tmp-out-', async (outDir) => {
+      const routes = buildRoutes({ get: () => undefined }, { resolveRoots: () => fx.roots });
+      const backupRoute = routes.find((x) => x.path === `${ROUTE_PREFIX}/backup`);
+      const res = await backupRoute.fetch(
+        new Request(`http://x${backupRoute.path}`, {
+          method: 'POST',
+          body: JSON.stringify({ moduleIds: MODULES, outDir }),
+        }),
+      );
+      assert.equal((await res.json()).ok, true);
+
+      // 再走一次不带 outDir 的（走默认目录），settings 里的 outDir 不该被默认值覆盖成别的
+      const settingsBefore = (await loadSettings(fx.roots)).outDir;
+      const again = await backupRoute.fetch(
+        new Request(`http://x${backupRoute.path}`, {
+          method: 'POST',
+          body: JSON.stringify({ moduleIds: MODULES }),
+        }),
+      );
+      const r2 = await again.json();
+      assert.equal(r2.ok, true);
+      // 上一步显式传过 outDir，所以这里应当沿用记忆下来的目录，而不是弹回 D:\dsh-backups-sync
+      assert.equal(r2.archive.path.startsWith(settingsBefore), true);
+    });
+  });
+});

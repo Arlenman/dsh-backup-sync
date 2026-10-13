@@ -553,6 +553,26 @@ test('effectiveSelection 优先级：用户手选 > 宿主默认 > 内置默认'
   assert.deepEqual([...I.effectiveSelection({ ...withHost, selected: [] })], []);
 });
 
+test('requestOutDir：输入框空就不带目录（让宿主用设置/默认值），有内容就去掉首尾空白', () => {
+  const I = internals();
+  assert.equal(I.requestOutDir(I.createInitialUiState()), undefined);
+  assert.equal(I.requestOutDir({ outDir: '   ' }), undefined);
+  assert.equal(I.requestOutDir({ outDir: '' }), undefined);
+  assert.equal(I.requestOutDir({ outDir: '  D:\\bak  ' }), 'D:\\bak');
+  assert.equal(I.requestOutDir({}), undefined);
+  assert.equal(I.requestOutDir(null), undefined);
+});
+
+test('★ 每个请求目录的地方都必须走 requestOutDir —— 「历史版本」刷新漏过（真机缺陷回归）', async () => {
+  const I = internals();
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8');
+  // 别处再出现手写的三元表达式，就说明又有人漏改了一处
+  const handWritten = src.split('\n').filter((l) => /ui\.outDir\.trim\(\)\s*===\s*''/.test(l));
+  assert.deepEqual(handWritten, [], `仍有手写的目录三元表达式：\n${handWritten.join('\n')}`);
+  assert.equal(I.requestOutDir({ outDir: 'X' }), 'X');
+});
+
 test('toggleSelection 不改原数组（React 状态必须换新引用才会重渲染）', () => {
   const I = internals();
   const before = ['skills', 'memory'];

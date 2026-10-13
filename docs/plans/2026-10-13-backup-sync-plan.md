@@ -180,19 +180,22 @@ daily/YYYY-MM-DD.todo.md
 
 ---
 
-### Task 7: 客户端 bundle 外壳
+### Task 7: 客户端 bundle 外壳 ✅ 已完成（离线部分；真机验证待做）
 
-**Files:**
-- Create: `lib/client.js`
-- Modify: `package.json`（加 `exports["./client"]` + `dsh.client`）
+**产出**：`lib/client.js`（约 200 行）、`package.json` 加 `exports["./client"]` + `dsh.client`、`test/client.test.js`（14 项离线契约测试）。
 
-**要求（契约已明确，见 `docs/notes/module-loader-contract.md` §9）：** 手写
-`window.__ModuleLoader__.load({ id:'dsh-backup-sync', factory })`，工厂体内用 `React.createElement`（**不用 JSX**）。
-`dsh.client = { platform:'web', inject:['@deepseek-ai/dsh-client-ui-sidebar','@deepseek-ai/dsh-client-ui-layout'] }`。
-模块导出 `inject: ['slots']`，注册 `sidebar.panellist`（`id:'backup-sync'`，`label:'备份同步'`，内联 SVG 图标）与 `main`（`key:'backup-sync'`）。
-先用最小内容验证「能被加载、能注册两个 slot」，再填 UI。
+**实现要点**：
+- 外壳 `window.__ModuleLoader__.load({ id:'dsh-backup-sync', factory })`，`id` 严格等于包名。
+- 模块导出 `inject: ['slots']`（**只此一项**），其余服务一律不用；`apply(ctx)` 里注册两个槽位。
+- `sidebar.panellist`：`{ name, id:'backup-sync', order:50, label:'备份同步' }` + 内联 SVG 图标（`rect` + 直线 `path`，几何简单到可肉眼验证）。**不传 `locale`**（侧边栏用 `resolveSlotLabel(label) ?? id`，普通字符串即可）。
+- `main`：`{ name, key:'backup-sync' }` —— 与 panellist 的 `id` 同一字符串，这是配对机制。
+- 面板为只读骨架：六张模块卡片（技能/插件/配置/记忆/待办/对话），对话卡片带「本地专用 · 不上云」徽标，计数先显示 `—`（数据接入是 Task 8）。
+- 全部样式走内联 `style`，不用 CSS 注入，避免 factory 外的副作用。
 
-**验证:** 装进 dev profile → `GET /` 的 `__DSH_BOOT__` 里出现本插件条目 → 面板列表出现「备份同步」→ 点击后主列切到本插件面板。
+**离线验证（`node --test`，14 项，123/123 全绿）**：用 `node:vm` 造假的 `window.__ModuleLoader__` 与假 `require`，把 bundle 原样跑一遍，覆盖：
+① `id` 等于包名；② 只 require 平台种子词或 `dsh.client.inject` 已声明的条目；③ `dsh.client` 声明合法且 `inject` 里不是服务名（模块 id 与服务名混淆是经典错误）；④ `exports["./client"]` 存在；⑤ `inject` 恰为 `['slots']`；⑥ 恰好注册两个槽位；⑦ `panellist` 有 `id`、`label` 是字符串、不传 `locale`；⑧ `main` 有 `key` 且与 `id` 一致；⑨ `main.key !== 'conversation'`；⑩ 图标在 `{size,active}`/`undefined`/`{}` 下都渲染出 `svg`；⑪ 非法 `size` 回退 16；⑫ SVG `d` 属性语法合法且只用简单图元；⑬ 面板含六张卡片与「本地专用 · 不上云」；⑭ 顶层无副作用（在无 `document` 的假 window 里跑不抛错）。
+
+**待做（真机）**：装进 dev profile → `GET /` 的 `__DSH_BOOT__` 出现本插件条目 → 面板列表出现「备份同步」→ 点击后主列切到本插件面板。
 
 ---
 

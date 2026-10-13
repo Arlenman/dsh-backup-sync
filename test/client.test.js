@@ -701,6 +701,58 @@ test('apply 会顺带注入样式，且仍然只注册那两个槽位', () => {
   assert.deepEqual(calls.register.map((r) => r.options.name), ['sidebar.panellist', 'main']);
 });
 
+test('★ 弹框配色不许硬编码深色 —— 本机应用是浅色主题，深底深字等于不可读', () => {
+  // 真实事故：.dbs-dialog 原来写 background:var(--dsh-surface,#1b1b1d)，
+  // 而 0.2.0-rc.2 全应用只有一个 --dsh* 变量（--dsh-onboarding-border-angle），
+  // 于是回退色 #1b1b1d 生效 → 浅色主题下弹框变成深底 + 深字，内容几乎看不见。
+  const css = internals().PANEL_CSS;
+  const dialog = css.match(/\.dbs-dialog\{[^}]*\}/)?.[0];
+  assert.ok(dialog, '应当有 .dbs-dialog 规则');
+  assert.ok(!/#1b1b1d|#1c1c1e|#000\b/.test(dialog), `弹框背景不得回退到硬编码深色：${dialog}`);
+  assert.ok(/var\(--dbs-surface/.test(dialog), '弹框背景应使用运行时解析出的 --dbs-surface');
+  assert.ok(/CanvasText/.test(dialog), '应保留 CanvasText 作为最后兜底');
+  assert.ok(/color-scheme/.test(dialog), '应声明 color-scheme，让系统色跟随主题');
+  // 面板自身也不该出现任何 --dsh-* 变量依赖（应用根本没定义）
+  assert.ok(!/var\(--dsh-/.test(css), '不要依赖应用未定义的主题变量');
+  assert.ok(/\.dbs-root\{[^}]*color:var\(--dbs-text/.test(css), '面板文字色应来自运行时解析');
+});
+
+test('syncTheme 从 body 的实际配色推出 --dbs-surface / --dbs-text', () => {
+  const props = {};
+  const doc = {
+    body: {},
+    documentElement: { style: { setProperty: (k, v) => { props[k] = v; } } },
+  };
+  const { module } = loadBundle({
+    globals: {
+      document: doc,
+      getComputedStyle: () => ({ backgroundColor: 'rgb(255, 255, 255)', color: 'rgb(15, 17, 21)' }),
+    },
+  });
+  module.__internals.syncTheme();
+  assert.equal(props['--dbs-surface'], 'rgb(255, 255, 255)');
+  assert.equal(props['--dbs-text'], 'rgb(15, 17, 21)');
+});
+
+test('syncTheme 遇到透明背景时不写死颜色（交给 Canvas 兜底），也不抛错', () => {
+  const props = {};
+  const doc = {
+    body: {},
+    documentElement: { style: { setProperty: (k, v) => { props[k] = v; } } },
+  };
+  const { module } = loadBundle({
+    globals: {
+      document: doc,
+      getComputedStyle: () => ({ backgroundColor: 'rgba(0, 0, 0, 0)', color: 'transparent' }),
+    },
+  });
+  assert.doesNotThrow(() => module.__internals.syncTheme());
+  assert.deepEqual({ ...props }, {}, '透明色不该被写成具体值');
+
+  // 没有 document 时也必须安静返回
+  assert.doesNotThrow(() => internals().syncTheme());
+});
+
 // ───────────────────────────────────────── 备份页签
 
 test('备份页签：汇总条只算勾选的模块，六张卡片都有勾选框', () => {
@@ -981,6 +1033,121 @@ test('★ 有冲突时逐条列出，默认两侧都不选，并如实报「还�
   assert.ok(!resolved.includes('还有 2 处没选'));
 });
 
+// ───────────────────────── 冲突裁决必须折算进计数
+//
+// 真机踩到的缺陷：点了「全部采用归档」，界面还写着「待裁决 1 · 导入 0」，
+// 二次确认甚至说「没有任何差异」—— 而实际上会写 1 个文件。裁决是本地状态，
+// 宿主给的 counts 是裁决前的原始差异，必须在客户端折算，否则数字与行为矛盾。
+
+/** 把 CountGrid 的格子读成 { 标签: 数值 }。 */
+function countCells(tree) {
+  const out = {};
+  for (const cell of findAll(tree, (n) => n.props?.className === 'dbs-count')) {
+    const value = cell.children?.[0]?.children?.[0];
+    const label = cell.children?.[1]?.children?.[0];
+    if (typeof label === 'string') out[label] = String(value);
+  }
+  return out;
+}
+
+/** 一条真冲突的预览。 */
+function conflictPreview(over = {}) {
+  const conflicts = [
+    { key: 'skills:SKILL.md', moduleId: 'skills', relPath: 'SKILL.md', base: 'a'.repeat(64), ours: 'b'.repeat(64), theirs: 'c'.repeat(64), reason: '双方都改了 → 需裁决' },
+  ];
+  return samplePreview({
+    conflicts,
+    counts: { import: 0, keep: 0, delete: 0, same: 19, skip: 31, conflict: 1 },
+    ...over,
+  });
+}
+
+test('effectiveCounts：裁决折算规则（归档→导入、本地→保留、未裁决→待裁决）', () => {
+  const I = internals();
+  const p = conflictPreview();
+  assert.deepEqual({ ...I.effectiveCounts(p, {}) }, { import: 0, keep: 0, delete: 0, same: 19, skip: 31, conflict: 1 });
+  assert.deepEqual({ ...I.effectiveCounts(p, { 'skills:SKILL.md': 'archive' }) }, { import: 1, keep: 0, delete: 0, same: 19, skip: 31, conflict: 0 });
+  assert.deepEqual({ ...I.effectiveCounts(p, { 'skills:SKILL.md': 'local' }) }, { import: 0, keep: 1, delete: 0, same: 19, skip: 31, conflict: 0 });
+  // 折算不得改动宿主给的原始对象
+  assert.equal(p.counts.conflict, 1, '不能就地改宿主的 counts');
+  assert.equal(p.counts.import, 0);
+  // 没有预览 / 没有冲突时也不能炸：一律回「写入 0」，确认框就不会谎报要写东西
+  assert.deepEqual({ ...I.effectiveCounts(null, {}) }, { import: 0, keep: 0, conflict: 0 });
+  assert.equal(I.effectiveCounts({ counts: { import: 2 } }, {}).import, 2);
+  assert.equal(I.effectiveWriteCount({ import: 3, delete: 2 }), 5);
+  assert.equal(I.effectiveWriteCount(null), 0);
+});
+
+test('★ 裁决后差异区的数字必须跟着动（真机缺陷回归）', () => {
+  const base = { ...initialUi(), loading: false, state: sampleState(), tab: 'import', importSource: 'a.tar.gz', preview: conflictPreview() };
+
+  const unresolved = countCells(renderFull(base));
+  assert.equal(unresolved['待裁决'], '1');
+  assert.equal(unresolved['导入'], '0');
+
+  const toArchive = countCells(renderFull({ ...base, resolutions: { 'skills:SKILL.md': 'archive' } }));
+  assert.equal(toArchive['待裁决'], '0', '裁决完就不该再报待裁决');
+  assert.equal(toArchive['导入'], '1', '采用归档必须计入「导入」');
+
+  const toLocal = countCells(renderFull({ ...base, resolutions: { 'skills:SKILL.md': 'local' } }));
+  assert.equal(toLocal['待裁决'], '0');
+  assert.equal(toLocal['保留本地'], '1');
+  assert.equal(toLocal['导入'], '0');
+});
+
+test('★ 未裁决时「执行导入」应禁用，并让用户先去裁决（而不是点进去看到「没有差异」）', () => {
+  const tree = renderFull({ ...initialUi(), loading: false, state: sampleState(), tab: 'import', importSource: 'a.tar.gz', preview: conflictPreview() });
+  const go = buttonByText(tree, '执行导入');
+  assert.equal(go[0].props.disabled, true);
+  const text = textOf(tree);
+  assert.ok(text.includes('还有 1 处冲突没裁决'), `要说清为什么不能点：${text.slice(-300)}`);
+  assert.ok(text.includes('选「采用归档版本」才会写入'));
+});
+
+test('★ 裁决为「采用归档」后「执行导入」才可点', () => {
+  const tree = renderFull({
+    ...initialUi(), loading: false, state: sampleState(), tab: 'import', importSource: 'a.tar.gz',
+    preview: conflictPreview(), resolutions: { 'skills:SKILL.md': 'archive' },
+  });
+  assert.equal(buttonByText(tree, '执行导入')[0].props.disabled, false);
+});
+
+test('★ 裁决为「保留本地」时禁用，并说明不会写入任何东西', () => {
+  const tree = renderFull({
+    ...initialUi(), loading: false, state: sampleState(), tab: 'import', importSource: 'a.tar.gz',
+    preview: conflictPreview(), resolutions: { 'skills:SKILL.md': 'local' },
+  });
+  assert.equal(buttonByText(tree, '执行导入')[0].props.disabled, true);
+  assert.ok(textOf(tree).includes('裁决结果是「保留本地」'));
+});
+
+test('★ 宿主说不能导入时，客户端不许自己放开（canApply 是上限）', () => {
+  const tree = renderFull({
+    ...initialUi(), loading: false, state: sampleState(), tab: 'import', importSource: 'a.tar.gz',
+    preview: conflictPreview({ canApply: false }), resolutions: { 'skills:SKILL.md': 'archive' },
+  });
+  assert.equal(buttonByText(tree, '执行导入')[0].props.disabled, true, '折算后能写也不行，宿主说不行就是不行');
+});
+
+test('★ 二次确认的「将写入」必须与页面数字一致（不再出现「没有任何差异」而实际写入）', () => {
+  const base = {
+    ...initialUi(), loading: false, state: sampleState(), tab: 'import', importSource: 'a.tar.gz',
+    preview: conflictPreview(), confirmingApply: true,
+  };
+
+  const toArchive = textOf(renderFull({ ...base, resolutions: { 'skills:SKILL.md': 'archive' } }));
+  assert.ok(toArchive.includes('导入 1'), `确认框应写「导入 1」：${toArchive.slice(-400)}`);
+  assert.ok(!toArchive.includes('没有任何差异'), '要写入时不能说没有差异');
+  assert.ok(toArchive.includes('未裁决冲突\n无') || toArchive.includes('无'), '已裁决就不该报未裁决');
+
+  const toLocal = textOf(renderFull({ ...base, resolutions: { 'skills:SKILL.md': 'local' } }));
+  assert.ok(toLocal.includes('0 个（不会改动任何文件）'), `保留本地时应明说不会改文件：${toLocal.slice(-400)}`);
+
+  const unresolved = textOf(renderFull(base));
+  assert.ok(unresolved.includes('1 处（按保留本地处理）'), '未裁决要在确认框里说明后果');
+  assert.ok(unresolved.includes('0 个（不会改动任何文件）'));
+});
+
 test('导入：动作明细可展开，按动作分组并写明每条的原因', () => {
   const ui = {
     ...initialUi(),
@@ -1159,4 +1326,63 @@ test('★ 整个面板不出现 undefined / NaN / [object Object]（六种状态
       assert.ok(!text.includes(bad), `第 ${i + 1} 种状态出现了「${bad}」：${text.slice(0, 400)}`);
     }
   }
+});
+
+// ───────────────────────── 凭据守卫的界面呈现
+
+/** 造一份「有文件被凭据守卫拦下」的 /state。 */
+function stateWithBlocked(credentials) {
+  const s = sampleState();
+  return { ...s, scan: { ...s.scan, credentials } };
+}
+
+test('★ 有文件被凭据守卫拦下时，备份页签必须显著提示，并逐条列出原因', () => {
+  const blocked = [
+    { moduleId: 'memory', relPath: 'projects/abc/KEY.md', reason: '内容命中「带令牌的 git 地址」（片段 https:…01）' },
+    { moduleId: 'config', relPath: '.credentials.yaml', reason: '文件名属于凭据类（.credentials.yaml）' },
+  ];
+  const text = textOf(renderFull({ ...initialUi(), loading: false, state: stateWithBlocked(blocked) }));
+
+  assert.ok(text.includes('凭据守卫拦下 2 个文件'), `应报出拦截数量：${text.slice(0, 300)}`);
+  assert.ok(text.includes('它们不会进包'), '必须说清后果');
+  assert.ok(text.includes('projects/abc/KEY.md'), '要列出文件路径');
+  assert.ok(text.includes('内容命中「带令牌的 git 地址」'), '要列出命中原因');
+  assert.ok(text.includes('.credentials.yaml'), '文件名类拦截也要列出');
+  assert.ok(text.includes('文件名属于凭据类'), '文件名类原因也要列出');
+});
+
+test('没有拦截时不出现凭据提示（避免天天喊狼来了）', () => {
+  const text = textOf(renderFull({ ...initialUi(), loading: false, state: sampleState() }));
+  assert.ok(!text.includes('凭据守卫拦下'), '没有拦截就不该出现红条');
+});
+
+test('拦截超过 8 个时折叠，并给出剩余数量', () => {
+  const many = Array.from({ length: 11 }, (_, i) => ({
+    moduleId: 'memory',
+    relPath: `f${i}.md`,
+    reason: '内容命中「OpenAI 风格密钥」',
+  }));
+  const text = textOf(renderFull({ ...initialUi(), loading: false, state: stateWithBlocked(many) }));
+  assert.ok(text.includes('凭据守卫拦下 11 个文件'), '总数要报全');
+  assert.ok(text.includes('f0.md') && text.includes('f7.md'), '前 8 个要列出');
+  assert.ok(!text.includes('f8.md'), '第 9 个起折叠');
+  assert.ok(text.includes('还有 3 个'), '要说明折叠了几个');
+});
+
+test('★ 备份二次确认里要带上凭据拦截数（用户确认的是「这些内容」，不是全部）', () => {
+  const blocked = [{ moduleId: 'memory', relPath: 'a.md', reason: '内容命中「JWT」' }];
+  const text = textOf(
+    renderFull({ ...initialUi(), loading: false, state: stateWithBlocked(blocked), confirmingBackup: true }),
+  );
+  assert.ok(text.includes('凭据守卫'), '确认框要提一句');
+  assert.ok(text.includes('拦下 1 个文件，不进包'), `要说清数量与后果：${text.slice(-400)}`);
+});
+
+test('★ 拦截字段缺失时（老宿主/接口裁剪）面板不得崩，也不得显示 undefined', () => {
+  const s = sampleState();
+  const noField = { ...s, scan: { ...s.scan } };
+  delete noField.scan.credentials;
+  const text = textOf(renderFull({ ...initialUi(), loading: false, state: noField }));
+  assert.ok(!text.includes('凭据守卫拦下'), '字段缺失就当作没有拦截');
+  assert.ok(!text.includes('undefined'), '不得显示 undefined');
 });

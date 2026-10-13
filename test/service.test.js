@@ -450,6 +450,62 @@ test('设置：默认值、落盘、坏文件回默认值', async () => {
 
 // ───────────────────────── HTTP 层
 
+test('★ /state 必须回传已保存的 settings —— 客户端靠它回填「同步目录」输入框', async () => {
+  await withFixture(async (fx) => {
+    const routes = buildRoutes({ get: () => undefined }, { resolveRoots: () => fx.roots });
+    const state = routes.find((r) => r.path === `${ROUTE_PREFIX}/state`);
+    const get = async () => {
+      const res = await state.fetch(new Request('http://x/api/dsh-backup-sync/state', { method: 'GET' }));
+      assert.equal(res.status, 200);
+      return await res.json();
+    };
+
+    const before = await get();
+    assert.ok(before.settings !== undefined, '/state 必须带 settings');
+    assert.equal(before.settings.syncDir, null, '没存过就是 null');
+    assert.ok(typeof before.settings.defaultOutDir === 'string' && before.settings.defaultOutDir !== '');
+
+    await saveSettings(fx.roots, { syncDir: 'D:\\OneDrive\\dsh-sync', outDir: 'D:\\bak' });
+    const after = await get();
+    assert.equal(after.settings.syncDir, 'D:\\OneDrive\\dsh-sync', '存过的同步目录必须回传');
+    // settings.outDir 是「生效值」（设置与默认合并后的结果），必须和顶层 outDir 一致
+    assert.equal(after.settings.outDir, 'D:\\bak');
+    assert.equal(after.outDir, 'D:\\bak');
+    assert.equal(after.settings.allowDelete, false);
+    assert.equal(after.settings.includeBaseline, true);
+  });
+});
+
+test('collectState 也自带 settings（服务层直接调用时不依赖路由补字段）', async () => {
+  await withFixture(async (fx) => {
+    const s = await collectState(fx.roots);
+    assert.ok(s.settings !== undefined, 'collectState 应自带 settings');
+    assert.equal(s.settings.syncDir, null);
+    assert.equal(s.settings.corrupted, false);
+    assert.ok(s.settings.path.endsWith('settings.json'));
+
+    await saveSettings(fx.roots, { syncDir: 'D:\\y' });
+    assert.equal((await collectState(fx.roots)).settings.syncDir, 'D:\\y');
+  });
+});
+
+test('★ collectState 回传被凭据守卫拦下的文件（界面要显著提示）', async () => {
+  await withFixture(async (fx) => {
+    // fixture 里塞一个内容含令牌的记忆文件
+    const memDir = join(fx.roots.dshHome, 'memories');
+    await mkdir(memDir, { recursive: true });
+    await writeFile(join(memDir, 'MEMORY.md'), '# 正常\n', 'utf8');
+    await writeFile(join(memDir, 'leak.md'), 'token = ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij\n', 'utf8');
+
+    const state = await collectState(fx.roots);
+    assert.equal(state.scan.credentials.length, 1, '被拦的文件要出现在 scan.credentials 里');
+    assert.equal(state.scan.credentials[0].relPath, 'leak.md');
+    assert.match(state.scan.credentials[0].reason, /内容命中/);
+    const names = state.scan.modules.find((m) => m.id === 'memory').entries.map((e) => e.relPath);
+    assert.ok(!names.includes('leak.md'), '被拦的文件不能出现在清单里');
+  });
+});
+
 test('路由表：路径合法、方法不重复、路径不重复', async () => {
   await withFixture(async (fx) => {
     const routes = buildRoutes({ get: () => undefined }, { resolveRoots: () => fx.roots });

@@ -1,0 +1,4 @@
+﻿.tmp-test-*/
+.tmp-baseline-*/
+.tmp-scan-*/
+node_modules/

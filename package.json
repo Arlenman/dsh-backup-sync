@@ -1,0 +1,25 @@
+{
+  "name": "dsh-backup-sync",
+  "version": "0.1.0",
+  "private": true,
+  "description": "备份同步 —— 可视化备份/恢复 DSH 资产（技能、插件、配置、记忆、待办、对话），并支持带基线的增量导入",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "scan": "node scripts/scan-report.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

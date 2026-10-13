@@ -1,0 +1,5 @@
+# 备份同步 —— 把插件插入 profile 的层栈。
+# id 用小写连字符（与其余插件一致），name 必须是包名。
+- insert:
+    - id: backup-sync
+      name: 'dsh-backup-sync'

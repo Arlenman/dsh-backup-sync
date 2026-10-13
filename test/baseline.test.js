@@ -142,3 +142,37 @@ test('filesFromEntries 按键归并', () => {
   ]);
   assert.deepEqual(Object.keys(files).sort(), ['skills:a/SKILL.md', 'todo:daily/2026-10-13.todo.md']);
 });
+
+test('★ 基线带 UTF-8 BOM 时必须照常读出来，不能当成损坏（真机踩过）', async () => {
+  // Windows 的记事本 / PowerShell 5.1 的 Set-Content -Encoding UTF8 会给文件加 BOM，
+  // 而 JSON.parse("\uFEFF{…}") 直接抛 → 基线被误判 corrupted → 用户看到
+  // 「首次同步将按无基线处理」，所有差异变成冲突。
+  const dir = await tmpdir();
+  try {
+    const f = join(dir, 'state.json');
+    const data = emptyBaseline('demo-pc');
+    data.files = filesFromEntries([{ moduleId: 'skills', relPath: 'a/SKILL.md', sha256: '11', size: 1, mtimeMs: 1 }]);
+    await writeFile(f, `\uFEFF${JSON.stringify(data, null, 2)}`, 'utf8');
+
+    const loaded = await loadBaseline(f);
+    assert.equal(loaded.ok, true, `不该判失败：${loaded.error ?? ''}`);
+    assert.equal(loaded.corrupted, false, '带 BOM 不算损坏');
+    assert.equal(loaded.exists, true);
+    assert.deepEqual(Object.keys(loaded.data.files), ['skills:a/SKILL.md'], '内容要完整读出来');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('基线真损坏（不是 BOM）时仍然如实报 corrupted', async () => {
+  const dir = await tmpdir();
+  try {
+    const f = join(dir, 'state.json');
+    await writeFile(f, '\uFEFF{ 这不是 JSON', 'utf8');
+    const loaded = await loadBaseline(f);
+    assert.equal(loaded.corrupted, true, 'BOM 之外的真损坏必须报出来');
+    assert.equal(loaded.ok, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

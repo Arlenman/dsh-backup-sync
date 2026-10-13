@@ -1406,3 +1406,206 @@ test('★ 拦截字段缺失时（老宿主/接口裁剪）面板不得崩，也
   assert.ok(!text.includes('凭据守卫拦下'), '字段缺失就当作没有拦截');
   assert.ok(!text.includes('undefined'), '不得显示 undefined');
 });
+
+// ───────────────────────── callApi：区分「调用失败」与「业务结论」
+
+/** 造一个假 fetch，按顺序返回给定的响应。 */
+function fakeFetchOf(responses) {
+  const calls = [];
+  const fn = async (url, init) => {
+    calls.push({ url, init });
+    const r = responses.shift();
+    if (r === undefined) throw new Error('假 fetch 没有更多响应了');
+    return r;
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+/** 造一个「宿主正常应答」的 Response 替身。 */
+function jsonResponse(status, payload) {
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    json: async () => payload,
+  };
+}
+
+/** 造一个「应答不是 JSON」的 Response 替身。 */
+function badJsonResponse(status) {
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    json: async () => {
+      throw new SyntaxError('Unexpected token < in JSON');
+    },
+  };
+}
+
+test('★ 校验未通过是「正常应答」，不是调用失败 —— 不得被 callApi 抛成异常（真机缺陷回归）', async () => {
+  // 真机症状：面板顶部出现「出错了：HTTP 200」，而真正有用的 bad 列表被整个丢掉。
+  // 宿主 /verify 的失败形状是 {ok:false, sidecar:{ok:false,...}, bad:[...]}，HTTP 200、没有 error 字段。
+  const payload = {
+    ok: false,
+    archive: { name: 'dsh-sync-20260101-000000.tar.gz' },
+    sidecar: { ok: false, expected: 'aa'.repeat(32), actual: 'bb'.repeat(32), checked: true },
+    checked: 3,
+    bad: [],
+  };
+  const fetch = fakeFetchOf([jsonResponse(200, payload)]);
+  const { callApi } = loadBundle({ globals: { fetch } }).module.__internals;
+
+  const data = await callApi('/verify', { archiveName: 'x.tar.gz' });
+  assert.equal(data.ok, false, '结论要原样交回调用方');
+  assert.equal(data.checked, 3, '明细不能丢');
+  assert.equal(data.sidecar.ok, false, '边车结论不能丢');
+  assert.equal(fetch.calls.length, 1);
+});
+
+test('宿主用 jsonFail 报错时（{ok:false, error}）callApi 必须抛，且抛的是那句人话', async () => {
+  const fetch = fakeFetchOf([jsonResponse(400, { ok: false, error: '备份目录不存在' })]);
+  const { callApi } = loadBundle({ globals: { fetch } }).module.__internals;
+  await assert.rejects(() => callApi('/backup', {}), /备份目录不存在/);
+});
+
+test('★ ok:false 且 error 是空串/非字符串时，按「业务结论」处理而不是抛「HTTP 200」', async () => {
+  const cases = [{ ok: false, error: '' }, { ok: false, error: null }, { ok: false }];
+  for (const payload of cases) {
+    const fetch = fakeFetchOf([jsonResponse(200, payload)]);
+    const { callApi } = loadBundle({ globals: { fetch } }).module.__internals;
+    const data = await callApi('/state');
+    assert.equal(data.ok, false, `${JSON.stringify(payload)} 应原样返回`);
+  }
+});
+
+test('应答不是 JSON 时报「接口返回的不是 JSON」并带上状态码', async () => {
+  const fetch = fakeFetchOf([badJsonResponse(502)]);
+  const { callApi } = loadBundle({ globals: { fetch } }).module.__internals;
+  await assert.rejects(() => callApi('/state'), /接口返回的不是 JSON（HTTP 502）/);
+});
+
+test('HTTP 非 2xx 但 body 是 JSON 且没写 ok:false 时，仍然要报错', async () => {
+  const fetch = fakeFetchOf([jsonResponse(500, { message: '内部错误' })]);
+  const { callApi } = loadBundle({ globals: { fetch } }).module.__internals;
+  await assert.rejects(() => callApi('/state'), /HTTP 500/);
+});
+
+test('GET 不带 body、POST 带 JSON body 与 content-type', async () => {
+  const fetch = fakeFetchOf([jsonResponse(200, { ok: true }), jsonResponse(200, { ok: true })]);
+  const { callApi } = loadBundle({ globals: { fetch } }).module.__internals;
+  await callApi('/state');
+  await callApi('/backup', { moduleIds: ['skills'] });
+  assert.equal(fetch.calls[0].init.method, 'GET');
+  assert.equal(fetch.calls[0].init.body, undefined);
+  assert.equal(fetch.calls[1].init.method, 'POST');
+  assert.equal(fetch.calls[1].init.headers['content-type'], 'application/json');
+  assert.deepEqual(JSON.parse(fetch.calls[1].init.body), { moduleIds: ['skills'] });
+  assert.ok(fetch.calls[0].url.endsWith('/api/dsh-backup-sync/state'), fetch.calls[0].url);
+});
+
+// ───────────────────────── 校验结果的文案
+
+/** 历史页在有包时才渲染校验结果块，所以造一行包。 */
+const ONE_ARCHIVE = {
+  name: 'dsh-sync-20261013-180657.tar.gz',
+  path: 'D:\\dsh-backups-sync\\dsh-sync-20261013-180657.tar.gz',
+  bytesHuman: '191.9 KB',
+  mtimeLocal: '2026-10-13 18:06:57',
+  machine: 'demo-pc',
+  modules: ['skills'],
+  totals: { files: 50 },
+};
+
+test('★ 边车 sha256 不符时要说清「期望 vs 实得」，不能只报「不符 0 个」（真机缺陷回归）', () => {
+  const text = textOf(
+    renderFull({
+      ...initialUi(),
+      loading: false,
+      state: sampleState({ archives: [ONE_ARCHIVE] }),
+      tab: 'history',
+      verifyResult: {
+        ok: false,
+        archive: { name: 'dsh-sync-20260101-000000.tar.gz' },
+        sidecar: { ok: false, expected: 'a1b2c3d4e5f6' + '0'.repeat(52), actual: 'ffeeddccbbaa' + '1'.repeat(52), checked: true },
+        checked: 50,
+        bad: [],
+      },
+    }),
+  );
+  assert.ok(text.includes('校验未通过'), '标题要说不通过');
+  assert.ok(text.includes('边车 sha256 不符'), `要解释失败原因：${text.slice(-500)}`);
+  assert.ok(text.includes('a1b2c3d4e5f6'), '要给出期望值前缀');
+  assert.ok(text.includes('ffeeddccbbaa'), '要给出实得值前缀');
+  assert.ok(text.includes('不符 0 个'), '逐文件不符数仍要如实显示');
+});
+
+test('逐文件哈希不符时逐条列出路径与原因', () => {
+  const text = textOf(
+    renderFull({
+      ...initialUi(),
+      loading: false,
+      state: sampleState({ archives: [ONE_ARCHIVE] }),
+      tab: 'history',
+      verifyResult: {
+        ok: false,
+        archive: { name: 'p.tar.gz' },
+        sidecar: { ok: true, expected: 'x', actual: 'x', checked: true },
+        checked: 2,
+        bad: [{ path: 'dsh/skills/a/SKILL.md', reason: '哈希不符（期望 abc…，实得 def…）' }],
+      },
+    }),
+  );
+  assert.ok(text.includes('dsh/skills/a/SKILL.md'), '要列出路径');
+  assert.ok(text.includes('哈希不符'), '要列出原因');
+  assert.ok(!text.includes('边车 sha256 不符'), '边车没问题就不该提');
+});
+
+test('校验通过时不出现任何失败文案', () => {
+  const text = textOf(
+    renderFull({
+      ...initialUi(),
+      loading: false,
+      state: sampleState({ archives: [ONE_ARCHIVE] }),
+      tab: 'history',
+      verifyResult: {
+        ok: true,
+        archive: { name: 'p.tar.gz' },
+        sidecar: { ok: true, expected: 'x', actual: 'x', checked: true },
+        checked: 50,
+        bad: [],
+      },
+    }),
+  );
+  assert.ok(text.includes('校验通过'), '要有通过提示');
+  assert.ok(!text.includes('校验未通过'), '不该同时出现失败提示');
+  assert.ok(!text.includes('边车 sha256 不符'));
+  assert.ok(!text.includes('反馈给开发者'));
+});
+
+test('★ 两个判据都解释不了 ok:false 时，如实说明而不是留一个红框没有理由', () => {
+  const text = textOf(
+    renderFull({
+      ...initialUi(),
+      loading: false,
+      state: sampleState({ archives: [ONE_ARCHIVE] }),
+      tab: 'history',
+      verifyResult: { ok: false, archive: { name: 'p.tar.gz' }, sidecar: { ok: true }, checked: 0, bad: [] },
+    }),
+  );
+  assert.ok(text.includes('逐文件哈希全部相符，却仍判为未通过'), `要给个说法：${text.slice(-400)}`);
+  assert.ok(text.includes('反馈给开发者'), '要引导用户上报');
+});
+
+test('verifyDetailLines 对残缺输入不崩、不吐 undefined', () => {
+  const { verifyDetailLines } = internals();
+  for (const v of [null, undefined, {}, { ok: false }, { ok: true, bad: null }, { ok: false, sidecar: null, bad: [] }]) {
+    // vm 里造的数组带的是 vm realm 的原型，deepStrictEqual 会判不等 —— 一律摊平成宿主数组。
+    const lines = [...verifyDetailLines(v)];
+    assert.ok(Array.isArray(lines), `${JSON.stringify(v)} 应返回数组`);
+    for (const l of lines) {
+      assert.ok(typeof l === 'string' && !l.includes('undefined'), `坏行：${l}`);
+    }
+  }
+  assert.deepStrictEqual([...verifyDetailLines(null)], []);
+  assert.deepStrictEqual([...verifyDetailLines({ ok: true, sidecar: { ok: true }, bad: [] })], []);
+});

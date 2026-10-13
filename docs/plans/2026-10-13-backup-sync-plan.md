@@ -397,6 +397,8 @@ dsh web --port 19399 --no-open                                   # 与 19387 的
 |---|---|---|
 | `__ModuleLoader__` 契约逆向不出来 | UI 做不了，退回纯命令 | Task 6 先行，失败则降级为 `/backup-sync` 命令 + 文本输出 |
 | 客户端 `inject` 写了不存在的服务名 | **触发致命恢复框，重置用户 cordis.patch.yml** | 只用已验证存在的服务名；装进 **dev profile** 先验，绝不先在 desktop 上试 |
+| **宿主半边不热重载** | 改了 `lib/index.js`/`lib/routes.js` 却以为生效，验收全假绿 | 见 §M3.5「关键运维事实」；**验宿主必须重启宿主**，桌面端不能重启就另起独立 web 实例（19399） |
+| 凭据被静默打进包 | 明文 API key 上云 | `lib/guard.js` 两道闸，命中即剔除 + 界面显著提示；真机复验 0 误伤 |
 | 记忆条目无主键导致合并留重复 | 记忆变脏 | 已告知用户并获接受；提供「合并后报告」列出疑似重复项 |
 | 桌面 profile 不能用 CLI 管理 | 无法自动化安装 | 开发全程用 dev profile；装 desktop 走应用内插件面板 |
 | GitHub 直连仅 ~8 KB/s | 同步超时 | M4 前先开 Clash Verge |
@@ -406,7 +408,13 @@ dsh web --port 19399 --no-open                                   # 与 19387 的
 ## 开发约定
 
 1. 全程在 **dev profile** 开发，**不碰 desktop**
+   ⚠️ **一期实际破了这条**：`link:` 安装先进了 desktop（当时判断是「客户端半边可热重载、风险可控」）。
+   复盘：这个判断对客户端成立、对宿主**不成立**，代价是宿主长期停在旧代码、验收结果不可信。
+   后续规矩：**宿主改动一律先在 `web` profile 的独立实例上验**（`dsh plugin --profile web add link:…` + `dsh web --port 19399`），
+   确认无误再让 desktop 用上。
 2. 每个 Task 一提交，commit message 用中文
 3. 改 `cordis.patch.yml` 前先用 `D:\DSH-data\validate-yaml.js` 校验
 4. 临时产物一律 `<仓库目录>\`
 5. 装插件前预检：`pluginManager/inspect` → 对照 boot entries → 再装
+6. **验收纪律**：界面断言写错会伪装成产品缺陷（本项目已误判 6 次）。失败先问「这是产品的错，还是我断言的错」，
+   再去读真实文案/真实返回；UI 断言必须打印**实际文本**，否则无法分辨。

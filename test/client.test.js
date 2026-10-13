@@ -817,6 +817,27 @@ test('宿主还没答话时「开始备份」也是禁用的（不能拿未知�
   assert.equal(start[0].props.disabled, true);
 });
 
+test('★ 备份页签必须有「重新统计」按钮 —— 面板只在挂载时取一次数，否则计数永远是旧的', () => {
+  // 用户的工作流：改完磁盘上的技能/配置 → 切回「备份同步」想看清有几条要备份。
+  // 面板此时不会重新请求，若没有手动刷新入口，汇总条显示的就是改之前的数字 ——
+  // 而汇总条的整个意义就是「备份前看清有几条」。真机截图核对时发现缺这个入口。
+  const ui = { ...initialUi(), loading: false, state: sampleState() };
+  let called = 0;
+  const tree = renderFull(ui, { refresh: () => { called += 1; } });
+  const btn = buttonByText(tree, '重新统计');
+  assert.equal(btn.length, 1, '备份页签应恰好一个「重新统计」按钮');
+  btn[0].props.onClick();
+  assert.equal(called, 1, '点「重新统计」必须真的触发刷新');
+});
+
+test('忙碌时「重新统计」也要禁用（避免并发请求互相盖掉结果）', () => {
+  const ui = { ...initialUi(), loading: false, state: sampleState(), busy: 'backup' };
+  const tree = renderFull(ui, { refresh: () => {} });
+  const btn = buttonByText(tree, '重新统计');
+  assert.equal(btn[0].props.disabled, true);
+  assert.equal(buttonByText(tree, '开始备份')[0].props.disabled, true);
+});
+
 test('★ 备份二次确认把「要备什么、多大、放哪、叫什么名字」一次说清', () => {
   const ui = { ...initialUi(), loading: false, state: sampleState(), confirmingBackup: true };
   const tree = renderFull(ui);
@@ -1484,10 +1505,42 @@ test('应答不是 JSON 时报「接口返回的不是 JSON」并带上状态码
   await assert.rejects(() => callApi('/state'), /接口返回的不是 JSON（HTTP 502）/);
 });
 
+test('★ 401 要说「会话已过期」，不能甩一句「不是 JSON」（真机踩过）', async () => {
+  // 真机上 CDP 注入的签名 cookie 只有 1 小时有效期，过期后 /api/* 回的是**纯文本**
+  // "authentication required"。原先统一报「接口返回的不是 JSON（HTTP 401）」，
+  // 排查时被引向 JSON 解析，实际是会话过期 —— 这句话必须能让人直接去刷新页面。
+  const fetch = fakeFetchOf([badJsonResponse(401), badJsonResponse(401)]);
+  const { callApi } = loadBundle({ globals: { fetch } }).module.__internals;
+  await assert.rejects(() => callApi('/state'), /会话已过期（HTTP 401）/);
+  await assert.rejects(() => callApi('/state'), /刷新页面/);
+});
+
+test('403 要说是来源地址不被信任', async () => {
+  const fetch = fakeFetchOf([badJsonResponse(403), badJsonResponse(403)]);
+  const { callApi } = loadBundle({ globals: { fetch } }).module.__internals;
+  await assert.rejects(() => callApi('/state'), /HTTP 403/);
+  await assert.rejects(() => callApi('/state'), /来源地址/);
+});
+
+test('authHint 只对 401/403 特判，其余状态码照旧', () => {
+  const { authHint } = loadBundle().module.__internals;
+  assert.match(authHint(401), /会话已过期/);
+  assert.match(authHint(403), /来源地址/);
+  assert.equal(authHint(500), '接口返回的不是 JSON（HTTP 500）');
+  assert.equal(authHint(0), '接口返回的不是 JSON（HTTP 0）');
+  assert.equal(authHint(undefined), '接口返回的不是 JSON（HTTP undefined）');
+});
+
 test('HTTP 非 2xx 但 body 是 JSON 且没写 ok:false 时，仍然要报错', async () => {
   const fetch = fakeFetchOf([jsonResponse(500, { message: '内部错误' })]);
   const { callApi } = loadBundle({ globals: { fetch } }).module.__internals;
   await assert.rejects(() => callApi('/state'), /HTTP 500/);
+});
+
+test('★ HTTP 401 但 body 是合法 JSON 时也要走「会话已过期」', async () => {
+  const fetch = fakeFetchOf([jsonResponse(401, { message: 'nope' })]);
+  const { callApi } = loadBundle({ globals: { fetch } }).module.__internals;
+  await assert.rejects(() => callApi('/state'), /会话已过期（HTTP 401）/);
 });
 
 test('GET 不带 body、POST 带 JSON body 与 content-type', async () => {

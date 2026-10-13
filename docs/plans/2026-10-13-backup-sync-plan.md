@@ -199,13 +199,29 @@ daily/YYYY-MM-DD.todo.md
 
 ---
 
-### Task 8: 面板 UI（只读）
+### Task 8a: 宿主半边（HTTP 接口 + 业务层）✅ 已完成 ★原计划外的关键补课
 
-**Files:**
-- Modify: `lib/client.js`
-- Create: `lib/server.js`（GET 路由，返回扫描结果）
+原计划把 Task 8 写成「`lib/server.js` 一个 GET 路由」，真动手才发现**接口契约必须先逆向**，否则写出来根本注册不上：路由 API 是 `ctx.get('connection').fetch.register({ path, methods, requestBody, fetch })`，带三条硬约束（路径必须在 `/api/` 下且每段匹配 `[A-Za-z0-9_$.-]+`、方法非空不重复、同路径只能注册一次），鉴权由内核自动套上。全部记在 `docs/notes/module-loader-contract.md`。
+桌面端更省事：Electron 主进程把 `dsh-app://app/*` 的请求全量转发给本地 Host 并**自己注入 cookie**（`main.js` 的 `forwardWebRequest`），所以客户端里 `fetch('/api/dsh-backup-sync/state')` 就够了，不用碰凭据。
 
-**要求:** 六张模块卡片显示条目数、总大小；「对话」卡片标注「本地专用 · 不上云」且默认不勾选。**先只读，不做备份按钮。**
+**实际结果（4 个新文件 + 1 处改动，21 项新测试，全仓 144/144 通过）：**
+- `lib/service.js` —— 业务层，与 HTTP 完全解耦所以能离线测：`collectState` / `runBackup` / `previewImport` / `applyImport` / `verifyArchiveFull` / `syncCopy` / `syncList`
+- `lib/routes.js` —— `/api/dsh-backup-sync/` 下 8 条路由：`state` / `settings` / `backup` / `import/preview` / `import/apply` / `verify` / `sync/push` / `sync/list`。异常一律转成 `{ok:false,error}`，界面上不会出现英文堆栈
+- `lib/settings.js` —— 自己的设置放 `~/.dsh/backup-sync/settings.json`。**刻意不写 `cordis.patch.yml`**：那是 DSH 托管配置，写坏会触发致命恢复并把用户全部自定义重置
+- `lib/index.js` —— 宿主入口 `export { name, inject, apply }`（对照已装的 `dsh-context`）。`inject` **留空**，路由在 `apply` 里用 `ctx.inject(['connection'], …)` 懒等：服务没到位只是少个接口，不会让插件停在 pending
+- `lib/paths.js` 加 `launchEnvReader` / `rootsFromContext` —— 根路径优先从内核的 `launchEnvironment` 服务取，`process.env` 兜底。解析错了会备份到空目录、导入时写错位置，所以另有 `sanityOf()` 做写前体检：**profile 目录不存在就拒绝一切写操作**
+
+★ **两处实测得出的重要订正（方向都是真丢数据，已写进代码注释）：**
+
+1. **基线更新必须「只覆盖本次参与的模块」，不能整份重写。** 原 `scripts/backup-now.mjs` 是整份重写 —— 一次「只备份技能」会把插件/记忆的基线键抹掉，下次导入那些模块就退化成「首次导入」，可能拿旧包覆盖本机新改动。
+2. **首次导入时基准必须留空，绝不能拿包内基线当基准。** 包内基线描述的是「打包那台机器当时的文件」，不是本机的历史。拿它当基准会在新机器上把「本地根本没有这个文件」判成「本地已删除、归档未改动 → 保持删除」（`diff.js` 里 `o===null && t===b` 那条分支）→ **首次导入一个文件都不写，而界面还显示成功** —— 静默失效比报错更糟。真机验收脚本 `verify-restore.mjs` 第一遍用的正是空基准，与此一致。包内基线仍读出来，但只用于**溯源展示**（这包来自哪台机器、上次同步时间）。测试里专门有一条「源机已同步过、包内基线非空」的用例守这个点。
+
+---
+
+### Task 8: 面板 UI
+**Files:** Modify: `lib/client.js`（宿主半边见 Task 8a）
+
+六张模块卡片显示条目数、总大小；「对话」卡片标注「本地专用 · 不上云」且默认不勾选。**只读骨架**已随 Task 7 落地（14 项离线契约测试）；**完整 UI —— 备份勾选 + 汇总 + 二次确认、历史版本列表、导入差异预览、冲突逐条裁决、同步入口 —— 待做**，宿主侧接口已全部就绪。
 
 ---
 

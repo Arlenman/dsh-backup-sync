@@ -20,23 +20,34 @@
 ├─ package.json
 ├─ cordis.patch.yml
 ├─ docs\plans\            设计 + 本计划
+├─ scripts\
+│   ├─ scan-report.mjs    真机只读扫描报告
+│   ├─ backup-now.mjs     真机打真包（命令行版备份）
+│   └─ verify-restore.mjs 真机验收：真包 → 空机器 → 四遍核对 ★
 ├─ lib\
 │   ├─ index.js           宿主半边入口：apply(ctx)，注册工具/命令/HTTP 路由
 │   ├─ paths.js           根路径解析（DSH_HOME / USER_HOME 可注入，便于测试）
+│   ├─ hash.js            流式 sha256（大文件不爆内存）
 │   ├─ modules.js         【M1】模块 → 文件清单映射（纯函数）
 │   ├─ scan.js            【M1】扫描 + sha256 + 计数（纯逻辑，可注入根）
 │   ├─ baseline.js        【M1】基线库读写（纯逻辑）
 │   ├─ diff.js            【M3】三方比较 → 动作计划（纯函数）
 │   ├─ archive.js         【M3】tar.gz + sha256 边车
-│   ├─ apply.js           【M3】按计划写盘（先备份后写）
+│   ├─ apply.js           【M3】按计划写盘（先快照后写，写完回算哈希）
 │   ├─ server.js          【M3】loopback HTTP 路由
 │   └─ client.js          【M2】客户端 bundle（手写外壳）
 └─ test\
+    ├─ fixture.js         共享仿真树夹具（含 empty:true 造「全新空机器」）
     ├─ modules.test.js
     ├─ scan.test.js
     ├─ baseline.test.js
-    └─ diff.test.js
+    ├─ diff.test.js
+    ├─ archive.test.js
+    └─ apply.test.js
 ```
+
+**跑测试**：`node --test`（**不要**带 `test/` 位置参数 —— Node 会把它当成模块去 require 而报 `Cannot find module`）。
+**跑真机验收**：`node scripts/verify-restore.mjs`（只写临时目录，不碰真实 `~/.dsh`）。
 
 ---
 
@@ -191,17 +202,38 @@ daily/YYYY-MM-DD.todo.md
 
 ## M3 · 归档 / 差分 / 增量导入（一期目标达成）
 
-### Task 9: `archive.js`
-`tar -czf` 到 `.tmp-<uuid>` → 算 sha256 → 原子改名 → 写 `.sha256` 与 `.meta.json` 边车（`meta` 含模块清单、条目数、机器名、时间）。**与 dsh-backup 同构，保证交叉可恢复。**
+### Task 9: `archive.js` ✅ 已完成
+`tar -czf` 到 `.tmp-<uuid>` → 算 sha256 → 原子改名 → 写 `.sha256` 与 `.meta.json` 边车（`meta` 含模块清单、条目数、机器名、时间）。
 
-### Task 10: `diff.js` —— 三方比较 ★核心
-**Files:** Create `lib/diff.js`, Test `test/diff.test.js`
+**实际结果（433 行，22 项测试）**：包内布局是**自描述**的 `manifest.json` + `RESTORE.md` + `dsh/` + `agents/` + `sync/state.json`，仍是任何工具都能直接打开的普通 `tar.gz`。
+⚠️ **订正原计划的一句话**：「与 dsh-backup 同构，保证交叉可恢复」是**不成立的** —— dsh-backup 的 `restore` 只认它自己的布局，跨工具恢复只能手工拷文件。所以这里不再宣称自动兼容，改为「布局自描述 + 有 RESTORE.md 指引 + 附带 sha256 边车」。
+额外落地的护栏：清单校验拒绝路径穿越（`../`、绝对路径、`C:` 盘符），打包用 spawn 数组传参（不过 shell），staging 与 `.part-` 临时名保证同盘原子改名。
+另加 `prefixForAbs()` 反查（绝对路径 → 包内前缀），供快照复用同一套布局。
 
-实现设计 §4.2 的**十种情况**，返回动作计划 `[{key, moduleId, relPath, action: 'import'|'keep'|'delete'|'conflict', reason}]`。
-**测试：十种情况逐个断言，一种不漏。** 这是全项目最容易出错的逻辑。
+### Task 10: `diff.js` —— 三方比较 ★核心 ✅ 已完成
+**Files:** `lib/diff.js`, `test/diff.test.js`
 
-### Task 11: `apply.js` —— 执行计划
-先整树快照到 `backup-sync/pre-restore-<时间戳>/`，再按计划写盘。分模块粒度：技能=目录级、配置=文件级、插件=JSON 字段级、记忆/待办=条目级（`KEY.md` 按 `mem-id` 主键、待办按 8 位 id、`MEMORY.md`/`USER.md` 按内容行去重）。
+**实际结果（126 行，19 项测试）**：存在性组合按 14 行真值表穷举，落到 **4 种**真冲突（原计划写「十种情况」，是估的，实际以真值表为准）：① 双方各自新增同名不同内容 ② 本地删了但归档改了 ③ 归档删了但本地改了 ④ 双方都改了且结果不同。
+★ 额外发现并写进设计 §4.2.1 的**选择性备份陷阱**：归档只含勾选模块时，未勾选模块的文件在 `incoming` 里全体缺席，不加保护就会被判成「归档已删除」→ 删掉本地记忆/配置/对话。因此 `diffFiles` **必须**收到归档声明的 `modules`，范围外一律 `skip`。
+`allowDelete` 默认 **false**（恢复不该删本地的东西）。
+`shaOf()` 容忍 `{key:{sha256}}` 与 `{key:'sha'}` 两种写法 —— 只认前者时误传后者会静默把每个文件判成「本地已删除」，方向正好是删数据。
+
+### Task 11: `apply.js` —— 执行计划 ✅ 已完成
+**实际结果（294 行，24 项测试）**：三条写入不变量 ——
+① **先快照**：只快照**本次会被覆盖或删除的文件**（原计划写「整树快照」，实测没必要且会让快照膨胀几十倍），落到 `backup-sync/pre-restore-<时间戳>/`，**沿用归档布局**（`dsh/` + `agents/`）→ 那份快照本身就是一个能原样还原的包；写完校验不过也用它回滚。
+② **冲突未裁决 = 一个字都不改**，如实记进 `conflictsUnresolved`。
+③ **写完回算 sha256**，不符则回滚（有快照就还原、本来不存在就删掉半成品）并计入 `failed`。
+★ **一个反直觉但很关键的点**：冲突裁决为「保留本地」之后，基线要记**归档版本**当共同祖先，**不能记本地版本**。记本地版本会让下次导入判成「归档改了、本地没动」→ 擅自把用户刚裁决保留的版本覆盖掉，等于裁决白做；记归档版本则判成「只有本地改了」→ 静默保留、不再打扰。
+另加 `resolveAbs()`：键 → 绝对路径必须过模块自己的 `include` 谓词（记忆与待办共用 `memories` 一个根，只差文件后缀，不判谓词就会写错位置），并挡路径穿越。
+`allowDelete` 在这里是**第二道锁**：计划里出现 `delete` 但没开删除时，执行器自己再拒一次。
+
+### Task 11b: 真机验收脚本 ✅ 已完成（原计划外，但这是唯一算数的证明）
+`scripts/verify-restore.mjs` —— 拿**真实备份包**在全新空目录上跑四遍，全程不碰真实 `~/.dsh`：
+1. **首次导入** → 49/49 文件哈希校验通过，与包内内容逐文件一致
+2. **幂等**：同一个包再导入 → 49 个全 `same`，0 导入 0 冲突，文件无任何变动
+3. **单方改动**：目标机改一个文件再导入 → 静默保留本地，不问也不改
+4. **真冲突**：源侧也改同一个文件并重新打包 → 恰好 1 个冲突；裁决采用归档版后本地换成归档版、**原件进了快照**、裁决后与源机逐文件一致
+真机实测（`dsh-sync-20261013-180657.tar.gz`，181.9 KB / 49 文件）：**四遍全通过**。
 
 ### Task 12: 冲突裁决 UI + 备份按钮 + 历史版本
 接 M2 的面板：勾选 → 汇总 → 二次确认 → 生成包；导入 → 差异预览 → 冲突逐项裁决。

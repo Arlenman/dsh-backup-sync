@@ -36,10 +36,22 @@ export const TODO_FILE = [
 export async function makeFixture(opts = {}) {
   const base = opts.base ?? PROJECT;
   const root = await mkdtemp(join(base, '.tmp-fixture-'));
-  const dshHome = join(root, '.dsh');
-  const userHome = join(root, 'home');
-  const agentsSkills = join(userHome, '.agents', 'skills');
-  const profile = 'desktop';
+  const roots = {
+    dshHome: join(root, '.dsh'),
+    userHome: join(root, 'home'),
+    profile: 'desktop',
+    agentsSkills: join(root, 'home', '.agents', 'skills'),
+  };
+
+  // empty:true 只建出根结构，用来模拟「家里那台还没同步过的新机器」
+  if (opts.empty !== true) await seed(roots);
+
+  return { root, roots, cleanup: () => rm(root, { recursive: true, force: true }) };
+}
+
+/** 把仿真树的内容写进去。 */
+async function seed(roots) {
+  const { dshHome, userHome, agentsSkills, profile } = roots;
 
   const put = async (abs, content) => {
     await mkdir(dirname(abs), { recursive: true });
@@ -83,16 +95,14 @@ export async function makeFixture(opts = {}) {
   // —— 对话：两层目录
   await at('sessions/--C-Users-x-.dsh--/uuid-1/session.v4.jsonl.zstd', 'Z\n');
   await at('sessions/--C-Users-x-.dsh--/uuid-2/session.v4.jsonl.zstd', 'ZZ\n');
-
-  return {
-    root,
-    roots: { dshHome, userHome, profile, agentsSkills },
-    cleanup: () => rm(root, { recursive: true, force: true }),
-  };
 }
 
-/** 在夹具上跑一段逻辑，结束自动清理。 */
-export async function withFixture(fn, opts) {
+/**
+ * 在夹具上跑一段逻辑，结束自动清理。
+ * 两种写法都支持：`withFixture(fn)` 与 `withFixture({ empty: true }, fn)`。
+ */
+export async function withFixture(a, b) {
+  const [opts, fn] = typeof a === 'function' ? [b ?? {}, a] : [a ?? {}, b];
   const fx = await makeFixture(opts);
   try {
     return await fn(fx);

@@ -237,3 +237,28 @@ test('空输入不炸', () => {
   assert.deepEqual(r.actions, []);
   assert.equal(describePlan(r), '没有任何差异');
 });
+
+test('★ 传裸哈希串（{key: "sha"}）与传对象走同一套规则', () => {
+  const asObjects = diffFiles({
+    baseline: { 'skills:a': { sha256: 'b' } },
+    current: { 'skills:a': { sha256: 'o' } },
+    incoming: { 'skills:a': { sha256: 'b' } },
+  });
+  const asStrings = diffFiles({
+    baseline: { 'skills:a': 'b' },
+    current: { 'skills:a': 'o' },
+    incoming: { 'skills:a': 'b' },
+  });
+  assert.deepEqual(asStrings.counts, asObjects.counts);
+  assert.equal(asStrings.counts.keep, 1, '裸串写法也该得出「只有本地改了」');
+  assert.equal(asStrings.actions[0].reason, asObjects.actions[0].reason);
+
+  // 反面对照：只认对象写法的话，裸串会被读成「这个键不存在」→ 判成「本地已删除」
+  const mixed = diffFiles({
+    baseline: { 'skills:a': { sha256: 'b' } },
+    current: { 'skills:a': 'o' },
+    incoming: { 'skills:a': { sha256: 'o' } },
+  });
+  assert.equal(mixed.counts.same, 1, '裸串里的哈希要被读出来，不能当成缺失');
+  assert.equal(mixed.counts.conflict, 0);
+});

@@ -6,92 +6,12 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { rm } from 'node:fs/promises';
 import { scan, summarize } from '../lib/scan.js';
+import { makeFixture, withFixture as withFixtureRaw } from './fixture.js';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const PROJECT = join(HERE, '..');
-
-/** 2 条待办的待办文件内容，格式与真实文件一致。 */
-const TODO_FILE = [
-  '<!--',
-  '待办条目格式说明（程序自动维护，请勿手改结构）：',
-  '- 条目以 § 分隔；第一条 § 之前的本注释块是格式说明，不是待办',
-  '-->',
-  '',
-  '§',
-  '[2026-10-07 13:59] [id: bd05fb63] [status: done] [cat: 运维]',
-  '条目一',
-  '§',
-  '[2026-10-07 14:18] [id: 52cb5fe9] [status: pending]',
-  '条目二',
-  '',
-].join('\n');
-
-async function makeFixture() {
-  const root = await mkdtemp(join(PROJECT, '.tmp-scan-'));
-  const dshHome = join(root, '.dsh');
-  const userHome = join(root, 'home');
-  const agentsSkills = join(userHome, '.agents', 'skills');
-  const profile = 'desktop';
-
-  const put = async (abs, content) => {
-    await mkdir(dirname(abs), { recursive: true });
-    await writeFile(abs, content, 'utf8');
-  };
-  const at = (rel) => put(join(dshHome, rel), 'x\n');
-  const skill = (name, rel, content = 'x\n') => put(join(agentsSkills, name, rel), content);
-
-  // —— 技能：在 ~/.dsh 之外，这是本插件存在的首要理由
-  await skill('cdp-browser-automation', 'SKILL.md', '# cdp\n');
-  await skill('cdp-browser-automation', 'scripts/run.mjs', 'export {};\n');
-  await skill('win-disk-cleaner', 'SKILL.md', '# cleaner\n');
-  // 技能里带 node_modules 时必须被跳过
-  await skill('cdp-browser-automation', 'node_modules/dep/index.js', 'module.exports={};\n');
-
-  // —— 插件 + 配置
-  await put(
-    join(dshHome, 'profiles', profile, 'package.json'),
-    `${JSON.stringify({ name: 'desktop', dsh: { profile: { bundles: ['a', 'b'] } } }, null, 2)}\n`,
-  );
-  await at(`profiles/${profile}/pnpm-lock.yaml`);
-  await at(`profiles/${profile}/.npmrc`);
-  await at(`profiles/${profile}/cordis.patch.yml`);
-  await at('settings.yaml');
-  await at('AGENTS.md');
-
-  // —— 记忆与待办：同一棵树，交错
-  await at('memories/MEMORY.md');
-  await at('memories/USER.md');
-  await at('memories/SUGGESTIONS.jsonl');
-  await at('memories/skills-state.json');
-  await at('memories/daily/2026-10-13.md');
-  await at('memories/projects/0c4f6561d62a/MEMORY.md');
-  await at('memories/projects/0c4f6561d62a/KEY.md');
-  await at('memories/advisor/instructions/a.md');
-  await put(join(dshHome, 'memories', 'daily', '2026-10-13.todo.md'), TODO_FILE);
-  await put(join(dshHome, 'memories', 'daily', '2026-09-30.todo.md'), TODO_FILE);
-  await put(join(dshHome, 'memories', 'projects', '0c4f6561d62a', 'TODOS.md'), TODO_FILE);
-  await put(join(dshHome, 'memories', 'TODOS-life.md'), TODO_FILE);
-
-  // —— 对话：两层目录
-  await at('sessions/--C-Users-x-.dsh--/uuid-1/session.v4.jsonl.zstd');
-  await at('sessions/--C-Users-x-.dsh--/uuid-2/session.v4.jsonl.zstd');
-
-  return { root, roots: { dshHome, userHome, profile, agentsSkills } };
-}
-
-/** 在同一个 fixture 上跑一次扫描（每个断言各跑一次也行，但没必要）。 */
-async function withFixture(fn) {
-  const { root, roots } = await makeFixture();
-  try {
-    return await fn(await scan(roots), roots);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-}
+/** 在夹具上跑一次扫描：让每个断言都拿到「扫完的结果 + roots」。 */
+const withFixture = (fn) => withFixtureRaw(async ({ roots }) => fn(await scan(roots), roots));
 
 test('技能从 ~/.agents/skills 扫到，且按技能目录计数', async () => {
   await withFixture((r) => {

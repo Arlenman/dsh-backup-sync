@@ -1531,6 +1531,129 @@ test('authHint 只对 401/403 特判，其余状态码照旧', () => {
   assert.equal(authHint(undefined), '接口返回的不是 JSON（HTTP undefined）');
 });
 
+/** 造一个假 document，记录 textarea 的创建/移除与 execCommand 的返回值。 */
+function fakeDocument({ execOk = true, hasExec = true } = {}) {
+  const made = [];
+  const removed = [];
+  const doc = {
+    body: {
+      appendChild(el) { made.push(el); },
+    },
+    createElement(tag) {
+      return {
+        tag,
+        value: '',
+        style: {},
+        selected: false,
+        setAttribute() {},
+        select() { this.selected = true; },
+        remove() { removed.push(this); },
+      };
+    },
+    execCommand(cmd) {
+      doc.lastCommand = cmd;
+      return execOk;
+    },
+  };
+  if (!hasExec) delete doc.execCommand;
+  return { doc, made, removed };
+}
+
+test('★ 剪贴板优先走 navigator.clipboard', async () => {
+  const written = [];
+  const { copyToClipboard } = loadBundle({
+    globals: { navigator: { clipboard: { writeText: async (v) => { written.push(v); } } } },
+  }).module.__internals;
+  // ★ vm 域坑：copyToClipboard 在 vm 里造出来的对象带的是 vm 的 Object.prototype，
+  // 直接 deepStrictEqual 会报「Values have same structure but are not reference-equal」。
+  // 先摊成宿主域对象再比。本项目已在数组上踩过一次，这是第二次。
+  assert.deepEqual({ ...(await copyToClipboard('D:\\a\\b.tar.gz')) }, { ok: true, how: 'clipboard' });
+  assert.deepEqual([...written], ['D:\\a\\b.tar.gz']);
+});
+
+test('★ 没有 navigator.clipboard 时必须退到 execCommand —— 桌面端 dsh-app:// 下就是这个情况', async () => {
+  // 真机风险：自定义协议只有被注册成 secure 才算安全上下文，否则 navigator.clipboard
+  // 直接是 undefined。原先的 `navigator.clipboard?.writeText(...)` 连调用都不会发生，
+  // 按钮点了毫无反应 —— 用户只会以为「复制坏了」。
+  const { doc, made, removed } = fakeDocument();
+  const { copyToClipboard } = loadBundle({ globals: { document: doc } }).module.__internals;
+  assert.deepEqual({ ...(await copyToClipboard('D:\\x\\y.tar.gz')) }, { ok: true, how: 'execCommand' });
+  assert.equal(made.length, 1, '应创建一个临时 textarea');
+  assert.equal(made[0].value, 'D:\\x\\y.tar.gz');
+  assert.equal(made[0].selected, true, '必须 select 后才有东西可复制');
+  assert.equal(doc.lastCommand, 'copy');
+  assert.equal(removed.length, 1, '临时元素必须移除，不能落在页面上');
+});
+
+test('★ writeText 抛错时也要退到 execCommand，而不是静默失败', async () => {
+  const { doc, removed } = fakeDocument();
+  const { copyToClipboard } = loadBundle({
+    globals: {
+      document: doc,
+      navigator: { clipboard: { writeText: async () => { throw new Error('NotAllowedError'); } } },
+    },
+  }).module.__internals;
+  assert.deepEqual({ ...(await copyToClipboard('D:\\p')) }, { ok: true, how: 'execCommand' });
+  assert.equal(removed.length, 1);
+});
+
+test('两条路都不通时如实报 failed，不谎报成功', async () => {
+  const { doc, removed } = fakeDocument({ execOk: false });
+  const { copyToClipboard } = loadBundle({ globals: { document: doc } }).module.__internals;
+  assert.deepEqual({ ...(await copyToClipboard('D:\\p')) }, { ok: false, how: 'failed' });
+  assert.equal(removed.length, 1, '即使 execCommand 失败也要移除临时元素');
+});
+
+test('连 document 都没有（宿主不给）时也是 failed，不抛异常', async () => {
+  const { copyToClipboard } = loadBundle().module.__internals;
+  assert.deepEqual({ ...(await copyToClipboard('D:\\p')) }, { ok: false, how: 'failed' });
+});
+
+test('空文本直接判 empty，不去碰剪贴板', async () => {
+  let touched = 0;
+  const { copyToClipboard } = loadBundle({
+    globals: { navigator: { clipboard: { writeText: async () => { touched += 1; } } } },
+  }).module.__internals;
+  assert.deepEqual({ ...(await copyToClipboard('')) }, { ok: false, how: 'empty' });
+  assert.deepEqual({ ...(await copyToClipboard(null)) }, { ok: false, how: 'empty' });
+  assert.deepEqual({ ...(await copyToClipboard(undefined)) }, { ok: false, how: 'empty' });
+  assert.equal(touched, 0);
+  assert.equal(loadBundle().module.__internals.legacyCopy(''), false, '空串不必走老路');
+});
+
+test('★ 复制失败时界面必须把路径摊出来让人手动复制（不能只说一句失败）', () => {
+  const ui = {
+    ...initialUi(),
+    loading: false,
+    state: sampleState({ archives: [ONE_ARCHIVE] }),
+    tab: 'history',
+    copyResult: { ok: false, how: 'failed', text: 'D:\\dsh-backups-sync\\dsh-sync-20261013-180657.tar.gz' },
+  };
+  const text = textOf(renderFull(ui));
+  assert.ok(text.includes('没能写进剪贴板'), `应提示复制失败，实得：${text}`);
+  assert.ok(text.includes('dsh-sync-20261013-180657.tar.gz'), '失败时必须把路径本身显示出来');
+});
+
+test('复制成功时界面说清已复制，并带上路径', () => {
+  const ui = {
+    ...initialUi(),
+    loading: false,
+    state: sampleState({ archives: [ONE_ARCHIVE] }),
+    tab: 'history',
+    copyResult: { ok: true, how: 'clipboard', text: 'D:\\dsh-backups-sync\\dsh-sync-20261013-180657.tar.gz' },
+  };
+  const text = textOf(renderFull(ui));
+  assert.ok(text.includes('已复制到剪贴板'), `应提示复制成功，实得：${text}`);
+  assert.ok(!text.includes('没能写进剪贴板'));
+});
+
+test('没点过复制时不显示任何复制提示', () => {
+  const ui = { ...initialUi(), loading: false, state: sampleState({ archives: [ONE_ARCHIVE] }), tab: 'history' };
+  const text = textOf(renderFull(ui));
+  assert.ok(!text.includes('已复制到剪贴板'));
+  assert.ok(!text.includes('没能写进剪贴板'));
+});
+
 test('HTTP 非 2xx 但 body 是 JSON 且没写 ok:false 时，仍然要报错', async () => {
   const fetch = fakeFetchOf([jsonResponse(500, { message: '内部错误' })]);
   const { callApi } = loadBundle({ globals: { fetch } }).module.__internals;

@@ -2,12 +2,15 @@
 /**
  * 对**真实机器**打一个备份包（M3 验收用，也是将来插件命令行的雏形）。
  *
- *   node scripts/backup-now.mjs                       # 默认 5 个模块 → D:\dsh-backups-sync
+ *   node scripts/backup-now.mjs                       # 默认 5 个模块 → 默认输出目录（见下）
  *   node scripts/backup-now.mjs --all                 # 含对话模块
  *   node scripts/backup-now.mjs --modules skills,todo
  *   node scripts/backup-now.mjs --out D:\somewhere
  *   node scripts/backup-now.mjs --verify              # 打完包解回来逐文件核对哈希
  *   node scripts/backup-now.mjs --no-baseline         # 不更新基线库
+ *
+ * ⚠️ 这个脚本**读真实的 `~/.dsh`**，并且默认会更新真实基线库
+ *    （`~/.dsh/backup-sync/state.json`）——用 `--no-baseline` 可跳过。
  */
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -18,12 +21,11 @@ import { keyOf } from '../lib/baseline.js';
 import { MODULE_IDS, MODULE_META } from '../lib/modules.js';
 import { resolveRoots } from '../lib/paths.js';
 import { scan, summarize } from '../lib/scan.js';
+import { defaultArchiveDir } from '../lib/service.js';
 import { sha256File } from '../lib/hash.js';
 
-const DEFAULT_OUT = 'D:\\dsh-backups-sync';
-
-function parseArgs(argv) {
-  const out = { out: DEFAULT_OUT, modules: null, all: false, verify: false, baseline: true, json: false };
+function parseArgs(argv, defaultOut) {
+  const out = { out: defaultOut, modules: null, all: false, verify: false, baseline: true, json: false };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--out') out.out = argv[++i];
@@ -42,8 +44,11 @@ function human(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 }
 
-const args = parseArgs(process.argv.slice(2));
 const roots = resolveRoots(process.env);
+// 默认输出目录与插件同口径（lib/service.js 的 defaultArchiveDir）：Windows 上真有 D 盘
+// 且 roots 像真实安装 → `D:\dsh-backups-sync`，否则落在 `<userHome>/dsh-backups-sync`。
+// 原来这里硬编码 D 盘，在没有 D 盘的机器（含 Linux/macOS）上必然写不进去。
+const args = parseArgs(process.argv.slice(2), defaultArchiveDir(roots));
 const moduleIds =
   args.modules ??
   (args.all ? MODULE_IDS : MODULE_IDS.filter((id) => MODULE_META[id].defaultChecked));

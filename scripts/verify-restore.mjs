@@ -29,11 +29,16 @@ import {
   verifyArchive,
 } from '../lib/archive.js';
 import { diffFiles } from '../lib/diff.js';
+import { resolveRoots } from '../lib/paths.js';
 import { scan } from '../lib/scan.js';
+import { defaultArchiveDir } from '../lib/service.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROJECT = resolve(HERE, '..');
-const DEFAULT_OUT = 'D:\\dsh-backups-sync';
+// 默认备份目录与插件同口径（lib/service.js 的 defaultArchiveDir）：Windows 上真有 D 盘
+// 且 roots 像真实安装 → `D:\dsh-backups-sync`，否则 `<userHome>/dsh-backups-sync`。
+// 原来这里硬编码 D 盘，在没有 D 盘的机器上会直接报「没找到备份包」。
+const DEFAULT_OUT = defaultArchiveDir(resolveRoots(process.env));
 const PROFILE = 'desktop';
 
 function parseArgs(argv) {

@@ -7,7 +7,18 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { resolve } from 'node:path';
 import { launchEnvReader, profileNameFromContext, resolveRoots, rootsFromContext } from '../lib/paths.js';
+
+/**
+ * 期望值必须过一遍 `resolve`。
+ *
+ * 产品代码用 `path.resolve` 归一化根路径，而 resolve 是**平台相关**的：Windows 上
+ * `C:\Users\x` 是绝对路径，Linux 上会被当成相对路径拼到 cwd 下。写死 Windows 字面量
+ * 会让同一份断言只在 Windows 通过（Linux CI 实测 5 条红，全部是这个原因）。
+ * 这里用同一个原语算期望值，两种平台都成立。
+ */
+const abs = (...parts) => resolve(...parts);
 
 /** 造一个只实现 `get(name, strict)` 的假 Context。 */
 const fakeCtx = (services) => ({
@@ -28,7 +39,7 @@ const envSnapshot = (values) => ({
 test('resolveRoots：默认 profile 是 desktop，且各根都可被 overrides 整体覆盖', () => {
   const r = resolveRoots({ USERPROFILE: 'C:\\Users\\x' });
   assert.equal(r.profile, 'desktop');
-  assert.equal(r.agentsSkills, 'C:\\Users\\x\\.agents\\skills');
+  assert.equal(r.agentsSkills, abs('C:\\Users\\x', '.agents', 'skills'));
   const o = resolveRoots({ USERPROFILE: 'C:\\Users\\x' }, { profile: 'web', dshHome: 'D:\\h' });
   assert.equal(o.profile, 'web');
   assert.equal(o.dshHome, 'D:\\h');
@@ -71,7 +82,7 @@ test('★ rootsFromContext：profile 名以 profileContext 为准，压过 DSH_P
   });
   const r = rootsFromContext(ctx);
   assert.equal(r.profile, 'web', 'profileContext 是权威来源');
-  assert.equal(r.dshHome, 'C:\\Users\\x\\.dsh');
+  assert.equal(r.dshHome, abs('C:\\Users\\x\\.dsh'));
 });
 
 test('rootsFromContext：没有 profileContext 时才退回 DSH_PROFILE，再退回 desktop', () => {

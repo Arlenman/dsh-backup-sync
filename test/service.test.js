@@ -8,8 +8,17 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { test } from 'node:test';
+
+/**
+ * 期望值必须过一遍 `resolve`。
+ *
+ * 产品代码用 `path.resolve` 归一化路径，而 resolve 是**平台相关**的：Windows 上
+ * `D:\bak` 是绝对路径，Linux 上会被当成相对路径拼到 cwd 下。写死 Windows 字面量
+ * 会让同一份断言只在 Windows 通过（Linux CI 实测 5 条红，全部是这个原因）。
+ */
+const abs = (...parts) => resolve(...parts);
 
 import { ROUTE_PREFIX, buildRoutes } from '../lib/routes.js';
 import {
@@ -51,7 +60,7 @@ test('normalizeModuleIds：缺省=默认勾选，显式=过滤未知并去重', 
 
 test('defaultArchiveDir：显式覆盖优先，否则本机 D 盘', () => {
   const roots = { dshHome: 'C:\\x\\.dsh', userHome: 'C:\\x', profile: 'desktop', agentsSkills: 'C:\\x\\s' };
-  assert.equal(defaultArchiveDir(roots, 'D:\\somewhere'), 'D:\\somewhere');
+  assert.equal(defaultArchiveDir(roots, 'D:\\somewhere'), abs('D:\\somewhere'));
   if (process.platform === 'win32' && existsSync('D:\\')) {
     assert.equal(defaultArchiveDir(roots), 'D:\\dsh-backups-sync');
   } else {
@@ -68,7 +77,7 @@ test('★ defaultArchiveDir：夹具 roots 绝不许落到整机共享的 D:\\ds
   assert.equal(fixtureOut, join('D:\\tmp\\abc\\home', 'dsh-backups-sync'));
   assert.notEqual(fixtureOut, 'D:\\dsh-backups-sync', '夹具数据绝不能打进用户真实备份目录');
   // 显式覆盖仍然最高优先级（真实安装与夹具都一样）。
-  assert.equal(defaultArchiveDir(fixture, 'D:\\work\\x'), 'D:\\work\\x');
+  assert.equal(defaultArchiveDir(fixture, 'D:\\work\\x'), abs('D:\\work\\x'));
   // 缺字段不能抛，按不安全处理（退到 userHome 下）。
   assert.equal(defaultArchiveDir({ userHome: 'D:\\tmp\\abc\\home' }), join('D:\\tmp\\abc\\home', 'dsh-backups-sync'));
   if (process.platform === 'win32' && existsSync('D:\\')) {
@@ -501,8 +510,8 @@ test('★ /state 必须回传已保存的 settings —— 客户端靠它回填�
     const after = await get();
     assert.equal(after.settings.syncDir, 'D:\\OneDrive\\dsh-sync', '存过的同步目录必须回传');
     // settings.outDir 是「生效值」（设置与默认合并后的结果），必须和顶层 outDir 一致
-    assert.equal(after.settings.outDir, 'D:\\bak');
-    assert.equal(after.outDir, 'D:\\bak');
+    assert.equal(after.settings.outDir, abs('D:\\bak'));
+    assert.equal(after.outDir, abs('D:\\bak'));
     assert.equal(after.settings.allowDelete, false);
     assert.equal(after.settings.includeBaseline, true);
   });

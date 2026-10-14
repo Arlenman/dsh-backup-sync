@@ -132,13 +132,117 @@ function initialUi(over = {}) {
 function sampleScan() {
   return {
     modules: [
-      { id: 'skills', countKind: 'dir', count: 10, files: 24, bytes: 133_120, bytesHuman: '130.0 KB', exists: true, entries: [{ relPath: 'cdp-browser-automation/SKILL.md', size: 2048, sizeHuman: '2.0 KB' }] },
-      { id: 'plugins', countKind: 'file', count: 3, files: 3, bytes: 13_000, bytesHuman: '12.7 KB', exists: true, entries: [] },
-      { id: 'config', countKind: 'file', count: 2, files: 2, bytes: 8_700, bytesHuman: '8.5 KB', exists: true, entries: [] },
+      {
+        id: 'skills',
+        countKind: 'dir',
+        count: 10,
+        files: 24,
+        bytes: 133_120,
+        bytesHuman: '130.0 KB',
+        exists: true,
+        entries: [
+          { relPath: 'cdp-browser-automation/SKILL.md', size: 2048, sizeHuman: '2.0 KB' },
+          { relPath: 'cdp-browser-automation/scripts/run.mjs', size: 1024, sizeHuman: '1.0 KB' },
+          { relPath: 'win-disk-cleaner/SKILL.md', size: 512, sizeHuman: '512 B' },
+        ],
+      },
+      {
+        id: 'plugins',
+        countKind: 'file',
+        count: 3,
+        files: 3,
+        bytes: 13_000,
+        bytesHuman: '12.7 KB',
+        exists: true,
+        entries: [
+          { relPath: 'package.json', size: 919, sizeHuman: '919 B' },
+          { relPath: 'pnpm-lock.yaml', size: 11_800, sizeHuman: '11.5 KB' },
+        ],
+      },
+      {
+        id: 'config',
+        countKind: 'file',
+        count: 2,
+        files: 2,
+        bytes: 8_700,
+        bytesHuman: '8.5 KB',
+        exists: true,
+        entries: [
+          { relPath: 'settings.yaml', size: 5, sizeHuman: '5 B' },
+          { relPath: 'AGENTS.md', size: 1400, sizeHuman: '1.4 KB' },
+        ],
+      },
       { id: 'memory', countKind: 'file', count: 8, files: 8, bytes: 230_000, bytesHuman: '224.6 KB', exists: true, entries: [] },
       { id: 'todo', countKind: 'entry', count: 2, files: 2, bytes: 1_800, bytesHuman: '1.8 KB', exists: true, entries: [] },
       { id: 'sessions', countKind: 'dir', count: 48, files: 48, bytes: 23_700_000, bytesHuman: '22.60 MB', exists: true, entries: [] },
     ],
+  };
+}
+
+/** 一份 /skills 应答（三个技能，覆盖「有描述 / 只有标题 / 缺 SKILL.md」）。 */
+function sampleSkills() {
+  return [
+    {
+      id: 'cdp-browser-automation',
+      name: 'cdp-browser-automation',
+      dir: 'cdp-browser-automation',
+      path: 'C:\\Users\\x\\.agents\\skills\\cdp-browser-automation',
+      description: '通过 DevTools 协议驱动一个已经在运行的 Chrome。',
+      descriptionSource: 'frontmatter',
+      hasSkillMd: true,
+      files: 2,
+      bytes: 3072,
+      bytesHuman: '3.0 KB',
+      mtimeMs: 1_760_000_000_000,
+    },
+    {
+      id: 'win-disk-cleaner',
+      name: 'cleaner',
+      dir: 'win-disk-cleaner',
+      path: 'C:\\Users\\x\\.agents\\skills\\win-disk-cleaner',
+      description: 'cleaner',
+      descriptionSource: 'heading',
+      hasSkillMd: true,
+      files: 1,
+      bytes: 512,
+      bytesHuman: '512 B',
+      mtimeMs: null,
+    },
+    {
+      id: 'loose-notes',
+      name: 'loose-notes',
+      dir: 'loose-notes',
+      path: 'C:\\Users\\x\\.agents\\skills\\loose-notes',
+      description: null,
+      descriptionSource: 'none',
+      hasSkillMd: false,
+      files: 1,
+      bytes: 128,
+      bytesHuman: '128 B',
+      mtimeMs: null,
+    },
+  ];
+}
+
+/** 一份 /state 应答里的 scheduleView。 */
+function sampleScheduleView(over = {}) {
+  return {
+    description: '每天 03:00 · 保留 7 份',
+    due: false,
+    reason: 'not-yet',
+    scheduledAt: null,
+    nextRunAt: 1_760_500_000_000,
+    state: {
+      lastPointAt: 1_760_000_000_000,
+      lastRunAt: null,
+      lastResult: null,
+      lastError: null,
+      lastArchive: null,
+      lastPruned: [],
+      runCount: 0,
+    },
+    statePath: 'C:\\Users\\x\\.dsh\\backup-sync\\schedule.json',
+    ...over,
   };
 }
 
@@ -153,7 +257,14 @@ function sampleState(over = {}) {
     sanity: { safe: true, warnings: [] },
     scan: sampleScan(),
     defaults: { moduleIds: ['skills', 'plugins', 'config', 'memory', 'todo'], allModuleIds: ['skills', 'plugins', 'config', 'memory', 'todo', 'sessions'], allowDelete: false, includeBaseline: true },
-    settings: { outDir: null, syncDir: null, allowDelete: false, includeBaseline: true },
+    settings: {
+      outDir: null,
+      syncDir: null,
+      allowDelete: false,
+      includeBaseline: true,
+      schedule: { enabled: false, mode: 'daily', at: '03:00', hours: 24, keep: 7, moduleIds: null, includeBaseline: true },
+    },
+    scheduleView: sampleScheduleView(),
     ...over,
   };
 }
@@ -905,12 +1016,579 @@ test('备份完成后把包名、大小、路径、sha256、边车校验结果�
   assert.ok(text.includes('49 个'), '文件数要显示');
 });
 
-test('展开某个模块能看到逐文件清单（含相对路径与体积）', () => {
-  const ui = { ...initialUi(), loading: false, state: sampleState(), expanded: { skills: true } };
-  const text = textOf(renderFull(ui));
+test('展开某个模块能看到逐文件清单（含相对路径与体积），并且每一行都能点开看内容', () => {
+  const ui = { ...initialUi(), loading: false, state: sampleState(), expanded: { plugins: true } };
+  const opened = [];
+  const tree = renderFull(ui, { openFile: (moduleId, relPath) => opened.push([moduleId, relPath]) });
+  const text = textOf(tree);
   assert.ok(text.includes('收起文件'), '展开后按钮文案应变成「收起文件」');
-  assert.ok(text.includes('cdp-browser-automation/SKILL.md'), '应列出相对路径');
-  assert.ok(text.includes('2.0 KB'), '应列出体积');
+  assert.ok(text.includes('package.json'), '应列出相对路径');
+  assert.ok(text.includes('919 B'), '应列出体积');
+
+  const rows = findAll(tree, (n) => n.type === 'li' && n.props['data-dbs-file'] === '1');
+  assert.equal(rows.length, 2, '两行都要标成可点');
+  assert.equal(rows[0].props.title, '点击查看内容：package.json', '悬停要提示这一行能点');
+  rows[0].props.onClick();
+  assert.deepStrictEqual(
+    opened.map((x) => Array.from(x)),
+    [['plugins', 'package.json']],
+    '点击要把「哪个模块的哪个文件」原样传出去 —— 宿主的 /file 就是按这两个参数定位的',
+  );
+});
+
+// ───────────────────────────────────────── 技能清单（展开技能卡）
+
+/** 假定时器版的 clickGate：可以同步「让时间过去」，不用真的等 240ms。 */
+function fakeGate(delayMs = 240) {
+  const timers = [];
+  const gate = internals().clickGate(delayMs, {
+    setTimeout: (fn, ms) => {
+      timers.push({ fn, ms, cleared: false });
+      return timers.length;
+    },
+    clearTimeout: (id) => {
+      if (timers[id - 1] !== undefined) timers[id - 1].cleared = true;
+    },
+  });
+  const run = (t) => {
+    if (t.cleared !== true) t.fn();
+  };
+  return { gate, timers, run };
+}
+
+test('技能卡展开后按「技能」分行：一行一个技能，显示文件数与体积，不再铺文件清单', () => {
+  const ui = { ...initialUi(), loading: false, state: sampleState(), expanded: { skills: true }, skills: sampleSkills() };
+  const text = textOf(renderFull(ui));
+  assert.ok(text.includes('收起技能'), '技能卡的展开按钮文案要说「技能」，不能说「文件」');
+  assert.ok(text.includes('查看 10 个技能') === false, '展开后不该还写着「查看」');
+  assert.ok(text.includes('cdp-browser-automation'), '要列出技能名');
+  assert.ok(text.includes('2 个文件 · 3.0 KB'), '文件数与体积要一起给');
+  assert.ok(text.includes('悬停看描述 · 单击查看详情 · 双击复制技能名'), '三种操作要教给用户');
+  assert.ok(!text.includes('scripts/run.mjs'), '文件明细要收进弹窗，不铺在卡片上');
+});
+
+test('技能卡未展开时只给一个「查看 N 个技能」入口，且不主动去取清单', () => {
+  const ui = { ...initialUi(), loading: false, state: sampleState() };
+  const text = textOf(renderFull(ui));
+  assert.ok(text.includes('查看 10 个技能'), '计数要用宿主给的技能数（10），不是文件数');
+  assert.ok(!text.includes('悬停看描述'), '没展开就不该有清单');
+});
+
+test('技能卡：清单还没取到 / 正在取 / 取失败 三种状态都要说清楚', () => {
+  const base = { ...initialUi(), loading: false, state: sampleState(), expanded: { skills: true } };
+  const idle = renderFull(base);
+  assert.equal(findAll(idle, (n) => n.props?.['data-dbs-skills'] === 'idle').length, 1);
+  assert.ok(textOf(idle).includes('展开后才会读取技能清单'));
+  assert.equal(findAll(renderFull({ ...base, skillsLoading: true }), (n) => n.props?.['data-dbs-skills'] === 'loading').length, 1);
+  const failedTree = renderFull({ ...base, skillsError: 'HTTP 500' });
+  assert.equal(findAll(failedTree, (n) => n.props?.['data-dbs-skills'] === 'error').length, 1, '失败状态也要能被定位到');
+  const failed = textOf(failedTree);
+  assert.ok(failed.includes('技能清单读取失败'), '失败要有标题');
+  assert.ok(failed.includes('HTTP 500'), '要带上宿主给的原因');
+  assert.ok(failed.includes('备份时仍会照常打包'), '失败要说明不影响备份本身');
+});
+
+test('技能行：悬停出描述（title）；没有描述也不留空白', () => {
+  const ui = { ...initialUi(), loading: false, state: sampleState(), expanded: { skills: true }, skills: sampleSkills() };
+  const rows = findAll(renderFull(ui), (n) => typeof n.props?.['data-dbs-skill'] === 'string');
+  assert.equal(rows.length, 3, '三个技能三行');
+  assert.equal(rows[0].props.title, '通过 DevTools 协议驱动一个已经在运行的 Chrome。');
+  assert.equal(rows[1].props.title, 'cleaner', '只有标题的技能，悬停显示标题');
+  assert.equal(rows[2].props.title, '（这个技能没有写描述）', '没有描述要明说，不能是空 tooltip');
+  assert.equal(rows[2].props.className, 'dbs-skill');
+});
+
+test('技能行：缺 SKILL.md 要有徽标', () => {
+  const ui = { ...initialUi(), loading: false, state: sampleState(), expanded: { skills: true }, skills: sampleSkills() };
+  const text = textOf(renderFull(ui));
+  assert.ok(text.includes('缺 SKILL.md'), '缺入口文件的技能要能被一眼看出来');
+});
+
+test('技能行：单击延迟 240ms 才开弹窗（不延迟的话双击复制会先弹一个窗）', () => {
+  const { gate, timers, run } = fakeGate();
+  const fired = [];
+  gate.click(() => fired.push('open'));
+  assert.deepStrictEqual(fired, [], '单击不能立刻开弹窗');
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].ms, 240);
+  assert.equal(gate.pending(), true);
+  run(timers[0]);
+  assert.deepStrictEqual(fired, ['open']);
+  assert.equal(gate.pending(), false, '定时器烧完要把句柄清掉，否则下一行就点不动了');
+});
+
+test('技能行：双击复制技能名，不会顺带开弹窗，之后还能正常单击', () => {
+  const { gate, timers, run } = fakeGate();
+  const fired = [];
+  gate.click(() => fired.push('open')); // 第一次 click
+  gate.click(() => fired.push('open')); // 第二次 click —— 取消待执行的单击
+  gate.dblclick(); // 兜底
+  timers.forEach(run);
+  assert.deepStrictEqual(fired, [], '双击不该开弹窗');
+  assert.equal(timers[0].cleared, true, '待执行的单击必须被取消');
+
+  // 双击之后门要回到干净状态
+  gate.click(() => fired.push('open'));
+  timers.forEach(run);
+  assert.deepStrictEqual(fired, ['open'], '双击之后再单击要能正常开弹窗');
+});
+
+test('技能行的 onClick / onDoubleClick 分别接到 skillClick / skillDblClick', () => {
+  const ui = { ...initialUi(), loading: false, state: sampleState(), expanded: { skills: true }, skills: sampleSkills() };
+  const calls = [];
+  const tree = renderFull(ui, {
+    skillClick: (s) => calls.push(`click:${s.id}`),
+    skillDblClick: (s) => calls.push(`dbl:${s.id}`),
+  });
+  const row = findAll(tree, (n) => n.props?.['data-dbs-skill'] === 'win-disk-cleaner')[0];
+  row.props.onClick();
+  row.props.onDoubleClick();
+  assert.deepStrictEqual(calls, ['click:win-disk-cleaner', 'dbl:win-disk-cleaner']);
+});
+
+test('技能弹窗：给全名字/目录/文件数/入口文件/描述，并只列这个技能的文件', () => {
+  const ui = { ...initialUi(), loading: false, state: sampleState(), skill: sampleSkills()[0] };
+  const text = textOf(renderFull(ui));
+  assert.ok(text.includes('技能：cdp-browser-automation'));
+  assert.ok(text.includes('C:\\Users\\x\\.agents\\skills\\cdp-browser-automation'), '目录要给绝对路径');
+  assert.ok(text.includes('2 个文件 · 3.0 KB'));
+  assert.ok(text.includes('有 SKILL.md'));
+  assert.ok(text.includes('通过 DevTools 协议驱动一个已经在运行的 Chrome。'));
+  assert.ok(text.includes('文件明细（2 个）'));
+  assert.ok(text.includes('cdp-browser-automation/scripts/run.mjs'), '要列本技能的文件');
+  assert.ok(!text.includes('win-disk-cleaner/SKILL.md'), '别的技能的文件不能混进来');
+  assert.ok(text.includes('复制技能名'), '弹窗里也要能复制技能名');
+});
+
+test('技能弹窗：复制技能名的反馈只出现在技能区，不串到文件弹窗', () => {
+  const ui = {
+    ...initialUi(),
+    loading: false,
+    state: sampleState(),
+    skill: sampleSkills()[0],
+    copyFeed: { skill: { ok: true, how: 'clipboard', label: 'cdp-browser-automation' } },
+  };
+  const tree = renderFull(ui);
+  const feeds = findAll(tree, (n) => n.props?.['data-dbs-copyfeed'] === 'skill');
+  assert.equal(feeds.length, 1);
+  assert.ok(textOf(feeds[0]).includes('已复制技能名：cdp-browser-automation'));
+  assert.equal(findAll(tree, (n) => n.props?.['data-dbs-copyfeed'] === 'file').length, 0);
+});
+
+// ───────────────────────────────────────── 文件内容弹窗
+
+const FILE_VIEW_OK = {
+  viewable: true,
+  reason: null,
+  guard: null,
+  moduleId: 'config',
+  relPath: 'settings.yaml',
+  absPath: 'C:\\Users\\x\\.dsh\\settings.yaml',
+  bytes: 5,
+  mtimeMs: 1_760_000_000_000,
+  text: 'a: 1\n',
+  truncated: false,
+  binary: false,
+};
+
+test('文件弹窗：能看就显示内容，并给「复制内容」按钮', () => {
+  const ui = { ...initialUi(), loading: false, state: sampleState(), file: { moduleId: 'config', relPath: 'settings.yaml' }, fileView: FILE_VIEW_OK };
+  const tree = renderFull(ui);
+  const text = textOf(tree);
+  assert.ok(text.includes('查看文件'));
+  assert.ok(text.includes('C:\\Users\\x\\.dsh\\settings.yaml'), '要显示真实绝对路径');
+  assert.ok(text.includes('5 B（5 字节）'), '字节数要给，方便判断是不是读全了');
+  const pre = findAll(tree, (n) => n.props?.['data-dbs-filetext'] === '1');
+  assert.equal(pre.length, 1);
+  assert.deepStrictEqual(Array.from(pre[0].children), ['a: 1\n'], '内容要原样渲染');
+  assert.ok(buttonByText(tree, '复制内容').length === 1);
+});
+
+test('文件弹窗：被安全闸拦下时不显示内容，只给原因和脱敏片段', () => {
+  const ui = {
+    ...initialUi(),
+    loading: false,
+    state: sampleState(),
+    file: { moduleId: 'plugins', relPath: '.npmrc' },
+    fileView: {
+      viewable: false,
+      reason: '内容像凭据（疑似 npm token），已拒绝显示。',
+      guard: { id: '内容闸', excerpt: 'npm_Ab…UV' },
+      moduleId: 'plugins',
+      relPath: '.npmrc',
+      absPath: 'C:\\Users\\x\\.dsh\\profiles\\desktop\\.npmrc',
+      bytes: 54,
+      mtimeMs: null,
+      text: null,
+      truncated: false,
+      binary: false,
+    },
+  };
+  const tree = renderFull(ui);
+  const text = textOf(tree);
+  assert.ok(text.includes('这个文件不能在这里查看'));
+  assert.ok(text.includes('内容像凭据'), '要给出宿主的原因');
+  assert.ok(text.includes('内容闸') && text.includes('npm_Ab…UV'), '要给脱敏后的片段');
+  assert.equal(findAll(tree, (n) => n.props?.['data-dbs-filetext'] === '1').length, 0, '被拦下时绝不能渲染内容');
+  assert.equal(buttonByText(tree, '复制内容').length, 0, '被拦下时不给复制按钮');
+  assert.equal(buttonByText(tree, '关闭').length, 1, '但一定要能关掉');
+});
+
+test('文件弹窗：截断要明说，别让用户以为文件就这么长', () => {
+  const ui = {
+    ...initialUi(),
+    loading: false,
+    state: sampleState(),
+    file: { moduleId: 'config', relPath: 'AGENTS.md' },
+    fileView: { ...FILE_VIEW_OK, relPath: 'AGENTS.md', bytes: 900_000, truncated: true, text: '# 全局约定\n' },
+  };
+  const text = textOf(renderFull(ui));
+  assert.ok(text.includes('文件太大，只显示了开头'));
+  assert.ok(text.includes('最多显示 512 KB'));
+  assert.ok(text.includes('878.9 KB'), '要报出完整文件多大');
+});
+
+test('文件弹窗：二进制文件要提醒内容可能没意义', () => {
+  const ui = {
+    ...initialUi(),
+    loading: false,
+    state: sampleState(),
+    file: { moduleId: 'skills', relPath: 'x/blob.bin' },
+    fileView: { ...FILE_VIEW_OK, moduleId: 'skills', relPath: 'x/blob.bin', binary: true, text: 'PK\u0003\u0004' },
+  };
+  assert.ok(textOf(renderFull(ui)).includes('看着是二进制'));
+});
+
+test('文件弹窗：还没答话时显示「正在读取…」，失败时把原因留在弹窗里', () => {
+  const base = { ...initialUi(), loading: false, state: sampleState(), file: { moduleId: 'config', relPath: 'settings.yaml' } };
+  assert.ok(textOf(renderFull(base)).includes('正在读取'));
+  const failed = textOf(renderFull({ ...base, fileError: '会话已过期（HTTP 401）' }));
+  assert.ok(failed.includes('读不出来'));
+  assert.ok(failed.includes('会话已过期'));
+});
+
+test('文件弹窗：复制内容的反馈只出现在文件弹窗', () => {
+  const ui = {
+    ...initialUi(),
+    loading: false,
+    state: sampleState(),
+    file: { moduleId: 'config', relPath: 'settings.yaml' },
+    fileView: FILE_VIEW_OK,
+    copyFeed: { file: { ok: true, how: 'clipboard', label: '5 个字符' } },
+  };
+  const tree = renderFull(ui);
+  const feeds = findAll(tree, (n) => n.props?.['data-dbs-copyfeed'] === 'file');
+  assert.equal(feeds.length, 1);
+  assert.ok(textOf(feeds[0]).includes('已复制文件内容：5 个字符'));
+});
+
+// ───────────────────────────────────────── 定时备份
+
+test('定时备份：默认关闭，只给开关和一行摘要，不铺表单', () => {
+  const ui = { ...initialUi(), loading: false, state: sampleState() };
+  const tree = renderFull(ui);
+  const card = findAll(tree, (n) => n.props?.['data-dbs-sched'] === '1');
+  assert.equal(card.length, 1, '备份页要有定时备份卡片');
+  const text = textOf(card[0]);
+  assert.ok(text.includes('定时备份'));
+  assert.ok(text.includes('已关闭 · 保留 7 份'), '摘要要说清当前是关的、保留几份');
+  assert.ok(!text.includes('下次运行'), '没开就不该显示下次运行时间');
+  assert.equal(findAll(tree, (n) => n.props?.id === 'dbs-sched-enabled').length, 1);
+  assert.equal(findAll(tree, (n) => n.props?.id === 'dbs-sched-mode').length, 0);
+});
+
+test('定时备份：开关默认不勾选', () => {
+  const tree = renderFull({ ...initialUi(), loading: false, state: sampleState() });
+  const box = findAll(tree, (n) => n.props?.id === 'dbs-sched-enabled')[0];
+  assert.equal(box.props.type, 'checkbox');
+  assert.equal(box.props.checked, false, '定时备份必须默认关闭 —— 无人值守地自动写盘不能是默认行为');
+});
+
+test('定时备份：开启后给频率/时间/保留份数/下次运行/上次结果/两个按钮', () => {
+  const ui = {
+    ...initialUi(),
+    loading: false,
+    state: sampleState(),
+    sched: { enabled: true, mode: 'daily', at: '03:00', hours: 24, keep: 7 },
+    schedView: sampleScheduleView({ nextRunAt: new Date(2026, 9, 15, 3, 0, 0).getTime() }),
+  };
+  const tree = renderFull(ui);
+  const text = textOf(tree);
+  assert.ok(text.includes('每天 03:00 · 保留 7 份'));
+  assert.ok(text.includes('下次运行：') && text.includes('2026-10-15 03:00'), '开启后必须显示下次运行时间');
+  assert.ok(text.includes('上次运行：还没跑过'));
+  assert.equal(findAll(tree, (n) => n.props?.id === 'dbs-sched-mode').length, 1);
+  const at = findAll(tree, (n) => n.props?.id === 'dbs-sched-at')[0];
+  assert.equal(at.props.type, 'time');
+  assert.equal(at.props.value, '03:00');
+  assert.equal(findAll(tree, (n) => n.props?.id === 'dbs-sched-keep').length, 1);
+  assert.equal(buttonByText(tree, '保存定时设置').length, 1);
+  assert.equal(buttonByText(tree, '立即跑一次').length, 1);
+});
+
+test('★ 定时备份：取消勾选后仍然给得出「保存定时设置」——否则「关掉」这件事根本存不下去', () => {
+  // 真机驱动 step15 抓到的：关闭态原来只渲染一句说明，保存按钮在开启分支里，
+  // 于是一取消勾选，表单连同保存按钮一起消失，用户点不到任何按钮。
+  const ui = {
+    ...initialUi(),
+    loading: false,
+    state: sampleState(),
+    sched: { enabled: false, mode: 'interval', at: '03:00', hours: 6, keep: 3, moduleIds: null },
+    schedDirty: true,
+  };
+  const tree = renderFull(ui);
+  assert.equal(buttonByText(tree, '保存定时设置').length, 1, '关闭 + 有未保存改动时必须给保存按钮');
+  assert.equal(buttonByText(tree, '立即跑一次').length, 0, '关着的时候不铺「立即跑一次」，免得和备份页签的按钮重复');
+  assert.ok(textOf(tree).includes('有改动还没保存'));
+  assert.equal(findAll(tree, (n) => n.props?.['data-dbs-sched-dirty'] === '1').length, 1);
+});
+
+test('定时备份：关闭且无改动时不铺按钮（默认状态保持干净）', () => {
+  const tree = renderFull({ ...initialUi(), loading: false, state: sampleState() });
+  assert.equal(buttonByText(tree, '保存定时设置').length, 0);
+  assert.equal(findAll(tree, (n) => n.props?.['data-dbs-sched-dirty'] === '1').length, 0);
+});
+
+test('★ 备份选项：基线开关与输出目录必须有稳定定位（否则验收脚本会点到定时备份开关上）', () => {
+  // 2026-10-14 真机上踩到：验收脚本按「模块卡之外的第一个勾选框」找基线开关，
+  // M5 加了定时备份卡片之后抓到的是 #dbs-sched-enabled，于是基线从没被关掉，
+  // 包里的 baselineIncluded 一直是 true。凡是「脚本要点的控件」都必须能唯一定位。
+  const tree = renderFull({ ...initialUi(), loading: false, state: sampleState() });
+  const baseline = findAll(tree, (n) => n.props?.id === 'dbs-include-baseline');
+  assert.equal(baseline.length, 1, '基线开关要有 id=dbs-include-baseline');
+  assert.equal(baseline[0].props['data-dbs-baseline'], '1', '并带 data-dbs-baseline 便于定位');
+  assert.equal(baseline[0].props.type, 'checkbox');
+  assert.equal(findAll(tree, (n) => n.props?.id === 'dbs-outdir').length, 1, '输出目录输入框要有 id');
+});
+
+test('定时备份：改成「每隔」时给小时选择，并如实显示间隔', () => {
+  const ui = {
+    ...initialUi(),
+    loading: false,
+    state: sampleState(),
+    sched: { enabled: true, mode: 'interval', at: '03:00', hours: 6, keep: 3 },
+  };
+  const tree = renderFull(ui);
+  assert.ok(textOf(tree).includes('每隔 6 小时 · 保留 3 份'));
+  const hours = findAll(tree, (n) => n.props?.id === 'dbs-sched-hours')[0];
+  assert.equal(hours.props.value, '6');
+  assert.equal(findAll(tree, (n) => n.props?.id === 'dbs-sched-at').length, 0, '按间隔跑就不该再要一个时间点');
+});
+
+test('定时备份：备份范围要照实说 —— 不固定时用的是各模块默认勾选，不是上面手动的勾选', () => {
+  const ui = { ...initialUi(), loading: false, state: sampleState(), sched: { enabled: true, mode: 'daily', at: '03:00', keep: 7, moduleIds: null } };
+  const tree = renderFull(ui);
+  const text = textOf(tree);
+  assert.ok(text.includes('技能、插件、配置、记忆、待办（各模块的默认勾选）'), '要说清默认范围是哪几个模块');
+  assert.ok(text.includes('固定用上面勾选的模块'), '要给一个把范围钉死的开关');
+  const pin = findAll(tree, (n) => n.props?.id === 'dbs-sched-pin')[0];
+  assert.equal(pin.props.checked, false, '默认不固定');
+  assert.ok(text.includes('「对话」永远不会进定时包'), '这是无人值守场景的硬闸，必须在界面上写明');
+  assert.ok(text.includes('那一刻 DSH 没开就跳过，不补跑，也不重试'), '要写明不做补跑');
+  assert.ok(text.includes('只删自己打的包'), '清理旧包的边界要说清');
+});
+
+test('定时备份：固定范围后按勾选列出模块，并允许取消固定', () => {
+  const ui = {
+    ...initialUi(),
+    loading: false,
+    state: sampleState(),
+    sched: { enabled: true, mode: 'daily', at: '03:00', keep: 7, moduleIds: ['skills', 'memory'] },
+  };
+  const tree = renderFull(ui);
+  assert.ok(textOf(tree).includes('技能、记忆'), '固定的范围要按名字列出来');
+  assert.equal(findAll(tree, (n) => n.props?.id === 'dbs-sched-pin')[0].props.checked, true);
+  const none = renderFull({ ...ui, sched: { ...ui.sched, moduleIds: [] } });
+  assert.ok(textOf(none).includes('一个模块都没选'), '空范围要如实预警，而不是假装会打包');
+});
+
+test('scheduleScopeText：三种形态', () => {
+  const f = internals().scheduleScopeText;
+  assert.ok(f({ moduleIds: null }).includes('默认勾选'));
+  assert.equal(f({ moduleIds: ['skills', 'todo'] }), '技能、待办');
+  assert.ok(f({ moduleIds: [] }).includes('一个模块都没选'));
+  assert.equal(f({ moduleIds: ['weird'] }), 'weird', '认不出的 id 也要显示出来，不能悄悄吞掉');
+});
+
+test('★ schedulePatch：只发改动过的键（否则「只改保留份数」会被当成改了频率、锚点被推到现在）', () => {
+  const f = internals().schedulePatch;
+  const saved = {
+    enabled: true,
+    mode: 'daily',
+    at: '03:00',
+    hours: 24,
+    keep: 7,
+    moduleIds: null,
+    includeBaseline: true,
+  };
+
+  // ① 只改保留份数 → body 里**只能有 keep**（一个计时键都不许出现）
+  const keepOnly = f(saved, { ...saved, keep: 3 });
+  assert.deepStrictEqual({ ...keepOnly }, { keep: 3 });
+
+  // ② 计时字段变了就要发出去
+  const timing = f(saved, { ...saved, mode: 'interval', hours: 6 });
+  assert.deepStrictEqual({ ...timing }, { mode: 'interval', hours: 6 });
+
+  // ③ 关掉定时：enabled 是计时键，必须发
+  assert.deepStrictEqual({ ...f(saved, { ...saved, enabled: false }) }, { enabled: false });
+
+  // ④ 完全没改 → 空对象（调用方据此直接清掉「未保存」提示，不发请求）
+  assert.deepStrictEqual({ ...f(saved, { ...saved }) }, {});
+
+  // ⑤ moduleIds 是数组，要按内容比（引用不同但内容相同 = 没改）
+  assert.deepStrictEqual({ ...f(saved, { ...saved, moduleIds: null }) }, {});
+  assert.deepStrictEqual({ ...f({ ...saved, moduleIds: ['skills'] }, { ...saved, moduleIds: ['skills'] }) }, {});
+  assert.deepStrictEqual({ ...f({ ...saved, moduleIds: ['skills'] }, { ...saved, moduleIds: ['todo'] }) }, { moduleIds: ['todo'] });
+
+  // ⑥ includeBaseline 缺省视为 true（与 normalizeSchedule 同口径），不许因为 undefined 就误发
+  assert.deepStrictEqual({ ...f({ ...saved, includeBaseline: undefined }, { ...saved, includeBaseline: true }) }, {});
+  assert.deepStrictEqual({ ...f(saved, { ...saved, includeBaseline: false }) }, { includeBaseline: false });
+
+  // ⑦ 宿主还没给出 schedule（旧宿主/未重启）时，以默认表单为基线，改动照样发得出去
+  assert.deepStrictEqual({ ...f(internals().DEFAULT_SCHEDULE_FORM, { ...internals().DEFAULT_SCHEDULE_FORM, keep: 5 }) }, { keep: 5 });
+});
+
+test('定时备份：表单有改动没保存要提示', () => {
+  const base = { ...initialUi(), loading: false, state: sampleState(), sched: { enabled: true, mode: 'daily', at: '03:00', keep: 7 } };
+  assert.equal(findAll(renderFull(base), (n) => n.props?.['data-dbs-sched-dirty'] === '1').length, 0);
+  const dirty = renderFull({ ...base, schedDirty: true });
+  assert.ok(textOf(dirty).includes('有改动还没保存'));
+});
+
+test('定时备份：保留 0 份要说「不清理」，不能显示「保留 0 份」', () => {
+  const ui = { ...initialUi(), loading: false, state: sampleState(), sched: { enabled: true, mode: 'daily', at: '03:00', keep: 0 } };
+  const tree = renderFull(ui);
+  assert.ok(textOf(tree).includes('不清理旧包'));
+  const keep = findAll(tree, (n) => n.props?.id === 'dbs-sched-keep')[0];
+  const labels = (keep.children ?? []).map((o) => textOf(o));
+  assert.ok(labels.includes('不清理'), '0 要显示成「不清理」');
+});
+
+test('定时备份：「立即跑一次」的结果分「跑成功」和「没打包」两种说法', () => {
+  const base = { ...initialUi(), loading: false, state: sampleState(), sched: { enabled: true, mode: 'daily', at: '03:00', keep: 7 } };
+  const ok = textOf(
+    renderFull({
+      ...base,
+      schedRun: {
+        ran: true,
+        archive: { name: 'dsh-sync-20261014-100000.tar.gz', bytesHuman: '190.0 KB', totals: { files: 50 } },
+        pruned: ['dsh-sync-20261001-030000.tar.gz'],
+      },
+    }),
+  );
+  assert.ok(ok.includes('定时备份已执行'));
+  assert.ok(ok.includes('dsh-sync-20261014-100000.tar.gz'));
+  assert.ok(ok.includes('1 份'), '清理了几份要说出来');
+
+  const no = textOf(renderFull({ ...base, schedRun: { ran: false, reason: 'failed', error: '定时备份没有可打包的模块' } }));
+  assert.ok(no.includes('这次没有打包'));
+  assert.ok(no.includes('定时备份没有可打包的模块'));
+});
+
+test('定时备份：宿主还没答话时卡片不空白', () => {
+  const ui = { ...initialUi(), loading: true, state: null };
+  const text = textOf(renderFull(ui));
+  assert.ok(text.includes('定时备份') && text.includes('正在读取'));
+});
+
+test('定时备份：宿主是老版本（settings 里没有 schedule）也要能渲染出可用的表单', () => {
+  // 插件升级后、DSH 还没重启时就是这个状态：宿主半边还是旧的。
+  // 卡在「正在读取…」会让人以为功能坏了；给默认表单 + 保存时照实报错才是诚实的。
+  const ui = { ...initialUi(), loading: false, state: sampleState({ settings: { outDir: null, syncDir: null, allowDelete: false, includeBaseline: true } }) };
+  const text = textOf(renderFull(ui));
+  assert.ok(!text.includes('正在读取'), '不能卡在读取中');
+  assert.ok(text.includes('已关闭 · 保留 7 份'), '要用客户端默认值渲染出摘要');
+  const box = findAll(renderFull(ui), (n) => n.props?.id === 'dbs-sched-enabled')[0];
+  assert.equal(box.props.checked, false, '兜底表单也必须是关闭状态');
+});
+
+// ───────────────────────────────────────── 新纯函数
+
+test('formatWhen：固定本地格式，无效值给破折号', () => {
+  assert.equal(internals().formatWhen(new Date(2026, 9, 13, 18, 6, 57).getTime()), '2026-10-13 18:06');
+  assert.equal(internals().formatWhen(new Date(2026, 0, 5, 3, 0, 0).getTime()), '2026-01-05 03:00');
+  assert.equal(internals().formatWhen(null), '—');
+  assert.equal(internals().formatWhen(0), '—');
+  assert.equal(internals().formatWhen('2026-10-13'), '—');
+});
+
+test('scheduleSummary：四种形态', () => {
+  const f = internals().scheduleSummary;
+  assert.equal(f({ enabled: false, keep: 7 }), '已关闭 · 保留 7 份');
+  assert.equal(f({ enabled: true, mode: 'daily', at: '03:00', keep: 7 }), '每天 03:00 · 保留 7 份');
+  assert.equal(f({ enabled: true, mode: 'interval', hours: 6, keep: 3 }), '每隔 6 小时 · 保留 3 份');
+  assert.equal(f({ enabled: true, mode: 'interval', hours: 48, keep: 0 }), '每隔 2 天 · 不清理旧包');
+  assert.equal(f(null), '未配置');
+});
+
+test('scheduleReasonText：把人话给全，不要甩机器码', () => {
+  const f = internals().scheduleReasonText;
+  assert.ok(f({ due: true, reason: 'due' }).includes('已到点'));
+  assert.equal(f({ due: false, reason: 'disabled' }), '定时备份已关闭');
+  assert.equal(f({ due: false, reason: 'not-yet' }), '还没到点');
+  assert.equal(f({ due: false, reason: 'already-ran' }), '这一次已经跑过了');
+  assert.ok(f({ due: false, reason: 'missed' }).includes('不补跑'));
+  assert.ok(f({ due: false, reason: 'anchored' }).includes('重新计时'));
+  assert.equal(f(null), '');
+  assert.equal(f({ due: false, reason: 'weird' }), 'weird');
+});
+
+test('scheduleLastText：没跑过 / 跑过 / 失败', () => {
+  const f = internals().scheduleLastText;
+  assert.equal(f({ state: {} }), '还没跑过');
+  assert.equal(f(null), '还没跑过');
+  const ran = f({
+    state: {
+      lastRunAt: new Date(2026, 9, 14, 3, 0, 0).getTime(),
+      lastArchive: 'dsh-sync-20261014-030000.tar.gz',
+      lastResult: { totals: { files: 50 }, bytesHuman: '190.0 KB' },
+    },
+  });
+  assert.equal(ran, '2026-10-14 03:00 · dsh-sync-20261014-030000.tar.gz · 50 个文件 · 190.0 KB');
+  assert.ok(f({ state: { lastError: '磁盘满了' } }).includes('上次失败：磁盘满了'));
+});
+
+test('copyLine：成功 / 空内容 / 剪贴板被拒 三种说法分开', () => {
+  const f = internals().copyLine;
+  assert.equal(f(null, '技能名'), null);
+  const ok = f({ ok: true, how: 'clipboard', label: 'cdp' }, '技能名');
+  assert.equal(ok.tone, 'good');
+  assert.equal(ok.text, '已复制技能名：cdp');
+  assert.ok(f({ ok: true, how: 'execCommand', label: 'cdp' }, '技能名').text.includes('兜底通道'));
+  assert.ok(f({ ok: false, how: 'empty' }, '技能名').text.includes('内容为空'));
+  assert.ok(f({ ok: false, how: 'failed' }, '技能名').text.includes('拒绝了剪贴板写入'));
+  assert.ok(f({ ok: false, how: 'failed' }, '技能名').text.includes('Ctrl+C'), '失败要给出下一步动作');
+});
+
+test('skillFiles：只筛这个技能目录下的文件', () => {
+  const f = internals().skillFiles;
+  const ui = { state: sampleState() };
+  assert.deepStrictEqual(
+    Array.from(f(ui, { id: 'cdp-browser-automation' })).map((e) => e.relPath),
+    ['cdp-browser-automation/SKILL.md', 'cdp-browser-automation/scripts/run.mjs'],
+  );
+  assert.equal(f(ui, { id: 'win-disk-cleaner' }).length, 1);
+  assert.equal(f(ui, { id: 'nope' }).length, 0, '不存在的技能不能退化成「全部文件」');
+  assert.equal(f({ state: null }, { id: 'x' }).length, 0);
+});
+
+test('skillMeta / skillTooltip / fileSizeText 的兜底', () => {
+  const I = internals();
+  assert.equal(I.skillMeta({ files: 3, bytesHuman: '1.0 KB' }), '3 个文件 · 1.0 KB');
+  assert.equal(I.skillMeta({ files: 3, bytes: 2048 }), '3 个文件 · 2.0 KB', '没有 bytesHuman 就自己算');
+  assert.equal(I.skillMeta(null), '0 个文件 · —');
+  assert.equal(I.skillTooltip({ description: '  有描述  ' }), '有描述');
+  assert.equal(I.skillTooltip({ description: '   ' }), '（这个技能没有写描述）');
+  assert.equal(I.skillMissingBadge({ hasSkillMd: true }), null);
+  assert.equal(I.skillMissingBadge({ hasSkillMd: false }), '缺 SKILL.md');
+  assert.equal(I.fileSizeText({ bytes: 1536 }), '1.5 KB（1536 字节）');
+  assert.equal(I.fileSizeText({}), '—');
+});
+
+test('fileRowLabel：路径缺失时不渲染成空白行', () => {
+  assert.equal(internals().fileRowLabel({ relPath: 'package.json' }), 'package.json');
+  assert.equal(internals().fileRowLabel({}), '（路径未知）');
 });
 
 // ───────────────────────────────────────── 历史版本页签

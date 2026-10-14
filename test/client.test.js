@@ -378,6 +378,15 @@ test('dsh.client 声明合法：platform 是字符串、inject 是字符串数�
       `inject 里写的是模块 id，不是 Cordis 服务名；"${id}" 是服务名（服务名要写在 lib/client.js 的 inject 数组里）`,
     );
   }
+  // M6 起入口搬进设置，客户端只剩「注册 settings.section」这一件事：
+  // bundle 里唯一的 require 是平台种子词 react，所以 inject 必须为空 ——
+  // 留着侧边栏/布局模块 id 会白送一层跨版本耦合（新内核若改了模块 id，
+  // 这个插件就会 did not activate，进而触发「应用无法使用」致命恢复）。
+  assert.deepEqual(client.inject, [], 'dsh.client.inject 必须为空：bundle 只 require react');
+  assert.ok(
+    !client.inject.some((id) => /sidebar|layout/u.test(id)),
+    '入口已搬进设置，不许再声明侧边栏/布局模块依赖',
+  );
 });
 
 test('package.json 用 exports["./client"] 暴露客户端 bundle', () => {

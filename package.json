@@ -24,10 +24,7 @@
     },
     "client": {
       "platform": "web",
-      "inject": [
-        "@deepseek-ai/dsh-client-ui-sidebar",
-        "@deepseek-ai/dsh-client-ui-layout"
-      ]
+      "inject": []
     }
   }
 }

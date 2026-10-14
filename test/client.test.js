@@ -2200,10 +2200,15 @@ test('403 要说是来源地址不被信任', async () => {
   await assert.rejects(() => callApi('/state'), /来源地址/);
 });
 
-test('authHint 只对 401/403 特判，其余状态码照旧', () => {
+test('authHint 只对 401/403/404 特判，其余状态码照旧', () => {
   const { authHint } = loadBundle().module.__internals;
   assert.match(authHint(401), /会话已过期/);
   assert.match(authHint(403), /来源地址/);
+  // ★ 404 必须给出「重启一次 DSH」这个动作。
+  //   界面半边是 link: 安装的（刷新即生效），宿主半边不会热加载 ——
+  //   新增接口在老宿主上就是 404。只说「返回的不是 JSON」会让人以为是功能坏了。
+  assert.match(authHint(404), /重启一次 DSH/);
+  assert.match(authHint(404), /HTTP 404/);
   assert.equal(authHint(500), '接口返回的不是 JSON（HTTP 500）');
   assert.equal(authHint(0), '接口返回的不是 JSON（HTTP 0）');
   assert.equal(authHint(undefined), '接口返回的不是 JSON（HTTP undefined）');

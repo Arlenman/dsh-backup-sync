@@ -1,0 +1,8 @@
+# 统一换行：仓库内一律 LF（Windows 检出也是），避免跨平台 diff 噪音
+* text=auto eol=lf
+
+# 二进制：不要做任何文本转换
+*.png binary
+*.ico binary
+*.tgz binary
+*.tar.gz binary

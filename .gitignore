@@ -1,2 +1,23 @@
+# 开发期临时物（测试夹具、探针脚本输出、还原演练目录都以此为前缀）
 .tmp-*
+
+# 依赖
 node_modules/
+
+# 打包产物（本仓库用 GitHub Release 发 tgz，不把 tgz 提交进历史）
+*.tgz
+*.tar.gz
+*.tar
+
+# 日志与本地环境
+*.log
+pnpm-debug.log*
+.env
+.env.*
+.npmrc
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

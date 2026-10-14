@@ -1,0 +1,35 @@
+name: CI
+
+# 这个插件**零运行时依赖**（只用 Node 内置模块 + 平台提供的 react），
+# 所以 CI 不需要 install 步骤，直接跑测试即可。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node ${{ matrix.node }} · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: 单元测试
+        run: node --test
+
+      - name: 冒烟：宿主半边能被 import（语法与顶层副作用）
+        if: matrix.os == 'ubuntu-latest'
+        run: node --input-type=module -e "const m = await import('./lib/index.js'); if (typeof m.apply !== 'function') { throw new Error('lib/index.js 没有导出 apply'); }"

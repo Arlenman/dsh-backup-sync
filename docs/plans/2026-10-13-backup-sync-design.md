@@ -606,3 +606,136 @@ runCount     累计跑了几次
 这条属于**交付物的一部分**：功能做完了但使用者看到一句误导性的报错，
 等于把「自己调试」这一步留给了用户。
 
+### 11.12 M6：入口从侧边栏搬进「设置」（低频功能不该占高频入口）
+
+**用户的原话**（附了一张设置弹窗的截图，红框标出左栏与内容栏）：
+
+> 我感觉还是放在设置这里面好，因为不是高频操作，放在左侧菜单的左上角有点浪费空间，
+> 未来可能需要留更多空间给到别的高频使用的插件入口
+
+原先的实现是**两个槽位**配对：`sidebar.panellist`（侧边栏一行，带图标）+
+`main`（中栏整块工作区，`key` 与侧边栏条目的 `id` 相同，这是「点一行开一块面板」的唯一机制）。
+侧边栏最上面那一格是全应用最贵的位置，而备份同步一个月也用不了几次 —— 占着它是浪费。
+
+**改成**：只注册一个 `settings.section`，id `backup-sync`、order `50`、label 普通字符串
+「备份同步」；**删掉** `sidebar.panellist` 与 `main` 两个注册，以及只给侧边栏用的
+`BackupSyncIcon`（外壳按 id 内置图标，未知 id 回退成齿轮 —— 塞不进自定义图标）。
+
+#### 契约（从内核源码读出，不是猜的）
+
+| 事实 | 出处 |
+| --- | --- |
+| 外壳声明 `settings.section` 为 `{kind:"list", scope:"root"}` | `dsh-client-ui-settings-general/lib/client.js:1111-1146` |
+| 左栏只读条目的 `id` / `order` / `label`，按 `order` 升序 | 同上 `:1016-1040` |
+| 分区**只在被选中时渲染**，且收到 `{close}` | 同上 `:337` `renderSlot("settings.section",{close},{only:active})` |
+| 弹窗宽 `800px`（`max-width:100vw-48px`），左栏 `188px` | 同文件 CSS `.wCInkW_panel` / `.wCInkW_nav` |
+| 内容区 `.options` = `flex:1; min-height:0; padding:0 24px 24px; overflow-y:auto` | 同上 |
+| 图标由外壳按 id 内置，未知 id 回退齿轮 | 同上 `navIcon()` `:244-267` |
+
+⇒ **内容宽 = 800 − 188 − 48 = 564px**；**滚动由外壳负责**；切走再切回会**重新挂载**
+（正好让面板每次挂载都重新取一次状态，计数不会停在旧值上）。
+
+已装分区的 order 实测：`account -10 / general 0 / models 10 / plugins 15 /
+skills-manager 17 / agent-presets 20 / 插件市场 30-40 / dsh-notify-me 45 / 本插件 50 /
+skin-center 120`。排 50 的结果就是左栏落在「通知提醒」与「皮肤」之间 —— 低频入口排在后面。
+
+#### 三个真踩到的坑
+
+1. **★ 折行不能按视口宽度**。原来的 `.dbs-grid` 用 `@media (max-width:900px/620px)` 折行 ——
+   这是**视口**媒体查询，而设置弹窗里的视口仍然是 1920px，两条规则**一次都不会命中**，
+   多列会被压进 564px（每列约 180px），卡片里的说明文字逐字换行。
+   **第一次修法**：把查询容器放在页签内容容器
+   （`.dbs-root>[data-dbs-tabbody]{container-type:inline-size}`），用
+   `@container (max-width:759px)` → 2 列、`@container (max-width:419px)` → 1 列。
+   真机实测分区宽 **559px**（564 减去滚动条）→ 落在 2 列档。
+   **最终修法（2026-10-15 用户实测后拍板）**：**一列到底**，`grid-template-columns:1fr`，
+   连容器查询与 `container-type` 一起撤掉（见 §11.14）。两列时每列约 268px，
+   「profile 依赖清单（package.json / lock / .npmrc）」会被折断成 `.npmr` 与 `c` 两行；
+   一列让每张卡独占整行，长说明按自然断点换行。
+2. **★ 查询容器不能放在 `.dbs-root` 上**（一列之后这条从「现行约束」降级为「将来若再加回容器查询的保险」）。
+   `container-type:inline-size` 蕴含 `contain:layout`，而 layout containment 会把
+   `position:fixed` 后代的**包含块从视口改成容器本身** —— 本面板的确认框 / 技能弹窗 /
+   文件弹窗全是 `.dbs-overlay{position:fixed}`，放到根上它们就会跟着内容滚、只盖住面板那一块。
+   所以容器只能落在页签内容容器上，浮层必须是它的**兄弟**。
+   这一条由单元测试锁死（`.dbs-root` 上不许有 `container-type` + DOM 结构断言：浮层不在页签容器里）。
+3. **★ 面板自己不能再滚**。`.dbs-root` 原来是 `height:100%; overflow-y:auto;
+   padding:18px 22px 48px`（为 `main` 那块整屏工作区写的）。搬进设置后外壳已经给了
+   `overflow-y:auto` 和 `padding:0 24px 24px` → 再写高度会套出**第二层滚动条**、
+   底部 48px 被截掉，左右还白扔 44px。**修法**：`.dbs-root{box-sizing:border-box;
+   padding:0 0 8px}`，去掉高度与滚动。
+
+#### 驱动脚本要跟着改（不然整轮验收全灭）
+
+`ui.mjs` 的 `clickPanelEntry()` 从「点侧边栏那一行」变成两步：先开设置
+（`button[class^="wCInkW_trigger"]`，兜底按可见文字「设置」找 `button`），
+再在 `[data-shortcut-modal="settings"] nav` 里按文字点「备份同步」那一行 ——
+两步都是**页面内 `element.click()`**（坐标点击在这套界面上已踩过四次）。
+`step5.mjs` 顺带加了四条入口位置的回归断言：面板必须在设置弹窗**里面**、
+左栏选中的必须是「备份同步」、侧边栏里**不再有**同名入口、分区宽度落在 480–700px
+（即设置内容栏，不是整屏）；页签切换也从坐标点击改成页面内点击 + 校验 `data-on="1"`。
+
+### 11.13 搬迁暴露的驱动缺陷：设置弹窗里**坐标点击彻底失效**（验收工具的根因）
+
+搬进设置弹窗之后第一轮总跑，`step13` 报「确认框不对：null」「点不到确认导入：total 0」，
+`step16` 报「技能弹窗里有可点文件行 —— 0 行」。两个都像产品坏了，**都不是**。
+
+**第一个真凶：`ui.mjs` 的 `clickByText` 一直在发坐标鼠标事件**
+（`mouseMoved` + `mousePressed` + `mouseReleased` 打在元素中心）。这套做法在
+「中栏工作区」里只是**偶发**打空（已记录四次），而面板搬进设置弹窗后变成**确定性失效**：
+
+```
+同一轮实测（「开始备份」按钮，disabled:false、在视口内、elementFromPoint 命中的就是它本身）
+  坐标点击 → 弹窗 0 → 0   ❌ 没开   hitOk:true   ← 连点三轮全打空
+  页面内点击 → 弹窗 0 → 1  ✅ 开了   （同一个按钮，紧接着点）
+```
+
+设置弹窗这一层（`data-shortcut-modal` + 自绘遮罩 + 焦点陷阱）把合成鼠标事件吃掉了。
+**修法**：`clickByText` 默认改成**页面内 `element.click()`**（对 React 的 onClick 完全等价），
+坐标路径留在 `{ pointer: true }` 下备用；返回值仍带 `hitOk/hitTag` 便于诊断。
+
+**第二个真凶：`closeAllDialogs` 只认「关闭」**。备份确认框的按钮是「取消 / 确认备份」，
+**没有**「关闭」→ 清不掉 → 那个 `.dbs-overlay` 就扣在面板上，后面每一次坐标点击都打在遮罩上
+（实测 `hitOk:false`，按钮永远点不动）。**修法**：按「关闭 → 取消」顺序找，
+两者都是非破坏性的（取消不写盘）。
+
+**第三个：断言在等一个猜的时长**。`step16` 第二次开技能弹窗实测要 ~1000ms 才渲染出来
+（单击先过 `clickGate` 的 240ms 分流，再叠加 React 渲染，此时面板里还多着一张展开的文件明细），
+而脚本在 950ms 处判定 → 报「0 行」。**修法**：全部改成 `waitFor` 等**条件**（弹窗出现、
+复制反馈出现），不再等时长。同一课在 §11.9 已经记过一次，这次是把漏改的那几处补齐。
+
+> 教训归并成一句：**驱动脚本里的每一个「固定 sleep + 立刻断言」，都是一颗定时炸弹**；
+> 而**坐标点击在这套界面上没有一处是可信的** —— 一律页面内点击。
+
+### 11.14 模块卡一列到底（2026-10-15 用户实测后拍板）
+
+用户在真机上看了两列的效果，直接说：「我感觉做成一列就好，不要两列」。
+
+**改动**：`.dbs-grid{display:grid;grid-template-columns:1fr;gap:10px}` ——
+三列模板、两条 `@container` 折行规则、`container-type:inline-size` 全部删除。
+
+**为什么删容器查询而不是留着**：一列与宽度无关，折行逻辑没有存在理由；
+而 `container-type` 本身带着 `contain:layout` 的副作用（§11.12 第 2 条），
+留着就是给未来埋一个「浮层 position:fixed 认错包含块」的陷阱。少一个机制少一类 bug。
+
+**为什么一列更好（实测）**：分区内容宽 559px，两列时每列约 268px ——
+「插件」卡的说明 `profile 依赖清单（package.json / lock / .npmrc）` 被折断成
+`.npmr` + `c` 两行；一列后每张卡独占整行，长说明按自然断点换行。
+代价是面板变高（6 张卡一列），滚动由外壳 `.options` 负责 —— 这本来就是 §11.12 第 3 条的约定。
+
+**测试与驱动同步改的地方**：
+
+| 位置 | 改动 |
+| --- | --- |
+| `test/client.test.js` | 「网格折行必须按容器宽度」→「模块卡一列到底」（断言 `1fr`、无多列模板、无 `@container`/`container-type`、无 `.dbs-grid` 视口媒体查询）；「弹窗必须落在查询容器外面」保留 DOM 结构断言，CSS 部分降级为「`.dbs-root` 上不许有 `container-type`」的保险 |
+| `shots-for-m6-review.mjs` | 断言从「2 列」改成「1 列 + 每张卡独占整行（卡片 x 全同、宽度 == 栅格宽）」；容器查询断言反转为 `container-type === 'normal'`；新增 `scrollTo()` —— 一列之后目标常落在折叠线以下，拍图前先 `scrollIntoView({block:'center'})` |
+| `step5.mjs` | 无需改（只断言入口位置与面板宽度，与列数无关） |
+
+**回归结果**：单测 423/423；UI 总跑 10/10 脚本 **273/273**，exit 0 —— 单列没有引起任何回归。
+审核图与清单见 `<验收工具目录>\review-m6\`（9 张图 + `M6-审核清单.md`）。
+
+**顺带修掉的一个断言对象错误**：审核脚本里「浮层仍按视口定位」原来读的是 `.dbs-dialog`
+自己的 `position`，而它必然是 `static` —— `position:fixed` 写在**浮层** `.dbs-overlay` 上，
+弹框只是它里面的静态子元素。改成读 `.dbs-overlay` 的 `position` 与覆盖矩形（实测
+`fixed` + `[0,0,1920,945]` 盖满视口）。
+
+

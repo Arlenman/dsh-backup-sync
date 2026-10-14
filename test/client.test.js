@@ -392,112 +392,65 @@ test('模块导出 inject 是 ["slots"]，且不包含任何不存在的服务�
   assert.equal(typeof module.apply, 'function');
 });
 
-test('apply 注册且只注册 sidebar.panellist 与 main 两个槽位', () => {
+test('★ apply 只注册 settings.section 一个槽位（入口从侧边栏搬进设置里）', () => {
   const { module } = loadBundle();
   const { ctx, calls } = makeFakeCtx();
   module.apply(ctx);
 
-  assert.deepEqual(calls.inject, ['sidebar.panellist', 'main']);
-  assert.equal(calls.register.length, 2);
-  assert.deepEqual(
-    calls.register.map((r) => r.options.name),
-    ['sidebar.panellist', 'main'],
-  );
+  assert.deepEqual(calls.inject, ['settings.section']);
+  assert.equal(calls.register.length, 1);
+  assert.equal(calls.register[0].options.name, 'settings.section');
 });
 
-test('sidebar.panellist 用 list 槽位的必需字段 id，且 label 是普通字符串（不依赖 locale）', () => {
+test('★ 侧边栏那一格必须腾出来：不许再注册 sidebar.panellist / main', () => {
+  // 用户明确要求：备份同步不是高频操作，占着左侧菜单最上面那一格是浪费，
+  // 那一格要留给以后高频使用的插件入口。
   const { module } = loadBundle();
   const { ctx, calls } = makeFakeCtx();
   module.apply(ctx);
 
-  const entry = calls.register.find((r) => r.options.name === 'sidebar.panellist');
-  assert.ok(entry, '必须注册 sidebar.panellist');
+  const names = calls.register.map((r) => r.options.name);
+  assert.ok(!names.includes('sidebar.panellist'), '不能再注册侧边栏条目');
+  assert.ok(!names.includes('main'), '不能再占用中栏面板位');
+  assert.ok(!calls.inject.includes('sidebar.panellist'), '也不该再去等侧边栏槽位');
+  assert.ok(!calls.inject.includes('main'), '也不该再去等中栏槽位');
+});
+
+test('settings.section 用 list 槽位的必需字段 id，label 是普通字符串', () => {
+  const { module } = loadBundle();
+  const { ctx, calls } = makeFakeCtx();
+  module.apply(ctx);
+
+  const entry = calls.register.find((r) => r.options.name === 'settings.section');
+  assert.ok(entry, '必须注册 settings.section');
   assert.equal(typeof entry.options.id, 'string', 'list 槽位必须给 id，否则 register 直接抛错');
   assert.equal(entry.options.id, 'backup-sync');
   assert.equal(typeof entry.options.order, 'number');
-  assert.equal(typeof entry.options.label, 'string', 'label 给普通字符串即可，侧边栏用 resolveSlotLabel(label) ?? id');
   assert.equal(entry.options.label, '备份同步');
   assert.equal(entry.options.locale, undefined, '不传 locale：没有注册对应字典时标签可能解析不到');
   assert.equal(typeof entry.component, 'function');
 });
 
-test('main 用 keyed 槽位的必需字段 key，且 key 与 panellist 的 id 一致（配对机制）', () => {
+test('★ 分区排在所有内核分区之后（低频入口不跟账号/模型/插件抢前面的位置）', () => {
   const { module } = loadBundle();
   const { ctx, calls } = makeFakeCtx();
   module.apply(ctx);
 
-  const panel = calls.register.find((r) => r.options.name === 'sidebar.panellist');
-  const main = calls.register.find((r) => r.options.name === 'main');
-  assert.ok(main, '必须注册 main');
-  assert.equal(typeof main.options.key, 'string', 'keyed 槽位必须给 key，否则 register 直接抛错');
-  assert.equal(
-    main.options.key,
-    panel.options.id,
-    'sidebar.panellist 的 id 必须等于 main 的 key —— 这是「侧边栏行点开对应面板」的唯一机制',
-  );
+  const entry = calls.register.find((r) => r.options.name === 'settings.section');
+  // 内核自带：account -10 / general 0 / models 10 / plugins 15 / agent-presets 20。
+  // 设置左栏只有 188px 宽、9 个分区已经排满，新的低频入口应当排在后面。
+  assert.ok(entry.options.order >= 21, `order=${entry.options.order} 排得太靠前`);
 });
 
-test('★ main 的 key 不能是 conversation（内置对话面板占用，replaceRisk: shadows-shipped-ui）', () => {
+test('分区组件收到 { close } 也照常渲染（设置外壳会传 close 进来）', () => {
   const { module } = loadBundle();
   const { ctx, calls } = makeFakeCtx();
   module.apply(ctx);
 
-  const main = calls.register.find((r) => r.options.name === 'main');
-  assert.notEqual(main.options.key, 'conversation', '用 conversation 会遮蔽内置对话面板');
-});
-
-test('图标组件收到 { size, active } 不抛错，并渲染出 SVG', () => {
-  const { module, fakeReact } = loadBundle();
-  const { ctx, calls } = makeFakeCtx();
-  module.apply(ctx);
-
-  const icon = calls.register.find((r) => r.options.name === 'sidebar.panellist').component;
-  for (const props of [{ size: 16, active: false }, { size: 22, active: true }, undefined, {}]) {
-    const tree = icon(props);
-    assert.equal(tree.type, 'svg', `props=${JSON.stringify(props)} 时应渲染 svg`);
-    assert.ok(tree.props.width > 0, 'width 必须为正数');
-    assert.ok(fakeReact, 'fakeReact 应当被用到');
-  }
-});
-
-test('图标对非法 size 回退到 16，不产生 NaN/负数尺寸', () => {
-  const { module } = loadBundle();
-  const { ctx, calls } = makeFakeCtx();
-  module.apply(ctx);
-
-  const icon = calls.register.find((r) => r.options.name === 'sidebar.panellist').component;
-  for (const bad of [{ size: 0 }, { size: -5 }, { size: 'big' }, { size: Number.NaN }]) {
-    assert.equal(icon(bad).props.width, 16, `size=${String(bad.size)} 应回退到 16`);
-  }
-});
-
-test('图标的 SVG 路径语法合法（写错 d 属性只会静默不渲染，肉眼很难发现）', () => {
-  const { module } = loadBundle();
-  const { ctx, calls } = makeFakeCtx();
-  module.apply(ctx);
-
-  const icon = calls.register.find((r) => r.options.name === 'sidebar.panellist').component;
-  const tree = icon({ size: 16, active: false });
-
-  const withD = findAll(tree, (n) => typeof n.props?.d === 'string');
-  assert.ok(withD.length > 0, '图标应当至少有一条 path');
-  for (const node of withD) {
-    const d = node.props.d;
-    assert.match(
-      d,
-      /^[MmLlHhVvCcSsQqTtAaZz0-9.,\s+-]+$/,
-      `path 的 d 属性含非法字符：${d}`,
-    );
-    assert.match(d, /^[Mm]/, `path 的 d 属性必须以 M/m 开头：${d}`);
-  }
-
-  // 只允许简单图元，避免再写回无法肉眼验证的复杂弧线。
-  const shapes = new Set(findAll(tree, (n) => typeof n.type === 'string').map((n) => n.type));
-  for (const shape of shapes) {
-    assert.ok(
-      ['svg', 'rect', 'path', 'circle', 'line', 'g'].includes(shape),
-      `图标里出现了意料之外的图元「${shape}」`,
-    );
+  const section = calls.register.find((r) => r.options.name === 'settings.section').component;
+  for (const props of [{ close: () => {} }, { close: undefined }, {}]) {
+    const tree = section(props);
+    assert.equal(tree.props['data-dsh-backup-sync'], 'panel');
   }
 });
 
@@ -506,7 +459,7 @@ test('面板渲染出六个模块卡片，对话卡片标注「本地专用 · �
   const { ctx, calls } = makeFakeCtx();
   module.apply(ctx);
 
-  const page = calls.register.find((r) => r.options.name === 'main').component;
+  const page = calls.register.find((r) => r.options.name === 'settings.section').component;
   const tree = page({});
   const text = textOf(tree);
 
@@ -529,7 +482,7 @@ test('面板有四个页签，首屏停在「备份」，每个页签都能独�
   const { module } = loadBundle();
   const { ctx, calls } = makeFakeCtx();
   module.apply(ctx);
-  const page = calls.register.find((r) => r.options.name === 'main').component;
+  const page = calls.register.find((r) => r.options.name === 'settings.section').component;
   const I = module.__internals;
 
   const tree = page({});
@@ -818,7 +771,7 @@ test('ensureStyles 幂等：注入一次；没有 document 时不抛错', () => 
   assert.ok(head.children[0].textContent.includes('.dbs-root'), '注入的应当是面板样式');
 });
 
-test('apply 会顺带注入样式，且仍然只注册那两个槽位', () => {
+test('apply 会顺带注入样式，且仍然只注册那一个槽位', () => {
   const head = { children: [], appendChild(el) { this.children.push(el); } };
   const doc = {
     head,
@@ -829,7 +782,70 @@ test('apply 会顺带注入样式，且仍然只注册那两个槽位', () => {
   const { ctx, calls } = makeFakeCtx();
   module.apply(ctx);
   assert.equal(head.children.length, 1, 'apply 应注入样式表');
-  assert.deepEqual(calls.register.map((r) => r.options.name), ['sidebar.panellist', 'main']);
+  assert.deepEqual(calls.register.map((r) => r.options.name), ['settings.section']);
+});
+
+test('★ 模块卡一列到底（设置分区只有 564px，两列会把说明文字挤成逐字换行）', () => {
+  // 2026-10-15 用户实测后要求：**一列就好，不要两列**。
+  // 真实数字：设置弹窗固定 800px 宽，左栏 188px，分区左右各 24px 内边距
+  // → 内容宽 564px（实测面板 559px）。两列时每列约 268px，
+  // 「profile 依赖清单（package.json / lock / .npmrc）」这种长说明会被折断成 `.npmr c`。
+  // 一列之后卡片独占整行，说明文字按自然断点换行。
+  const css = internals().PANEL_CSS;
+  // 先把注释剥掉：注释里为了讲清原因会写出 @media/@container 字样，直接匹配原文会误判成规则。
+  const rules = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const grid = rules.match(/\.dbs-grid\{[^}]*\}/)?.[0];
+  assert.ok(grid, '应当有 .dbs-grid 规则');
+  assert.ok(
+    /grid-template-columns:\s*(1fr|repeat\(1\s*,)/.test(grid),
+    `网格必须是一列：${grid}`,
+  );
+  assert.ok(!/repeat\(\s*[2-9]/.test(grid), `不许再出现多列模板：${grid}`);
+  assert.ok(!/minmax\(/.test(grid), `一列不需要 minmax 自适应列宽：${grid}`);
+
+  // 一列与宽度无关，所以**整条容器查询链路一并撤掉**：
+  // 留着 container-type 只会白送一个 `contain:layout` 陷阱（见下一条测试）。
+  assert.ok(!/@container/.test(rules), '一列布局不该再用容器查询');
+  assert.ok(!/container-type/.test(rules), '一列布局不该再声明查询容器');
+
+  // 历史事故：折行一度写成视口媒体查询，而视口是 1920px，永远不命中。
+  const viewportRules = rules.match(/@media[^{]*\{[^@]*\.dbs-grid/g) ?? [];
+  assert.deepEqual(viewportRules, [], `网格不许依赖视口宽度折行：${viewportRules.join(' | ')}`);
+});
+
+test('★ 设置分区自己滚（外壳 .options 已是 overflow-y:auto），面板不能再套一层高度/滚动', () => {
+  const css = internals().PANEL_CSS;
+  const root = css.match(/\.dbs-root\{[^}]*\}/)?.[0];
+  assert.ok(root, '应当有 .dbs-root 规则');
+  assert.ok(!/height:\s*100%/.test(root), `height:100% 会在设置分区里套出第二层滚动条：${root}`);
+  assert.ok(!/overflow-y:\s*auto/.test(root), `面板自己滚动会和外壳的滚动打架：${root}`);
+});
+
+test('★ 浮层必须留在页签容器外面（将来若再引入容器查询，contain:layout 会把 position:fixed 变成相对容器定位）', () => {
+  const I = internals();
+  const css = I.PANEL_CSS;
+
+  // ① 这是**保险**而不是当下生效的约束：一列布局已经把 container-type 撤了，
+  //    但结构上「浮层不能塞进页签容器」要一直成立 —— 一旦有人把 container-type
+  //    加回页签容器，塞进去的浮层就会跟着内容滚、只盖住面板那一块。
+  //    顺带把最危险的位置钉死：`.dbs-root` 上绝对不能有 container-type。
+  const rootRule = css.match(/\.dbs-root\{[^}]*\}/)?.[0] ?? '';
+  assert.ok(rootRule !== '', '应当有 .dbs-root 规则');
+  assert.ok(!/container-type/.test(rootRule), `container-type 不能放在 .dbs-root 上：${rootRule}`);
+
+  // ② 结构上也要成立：浮层是页签容器的兄弟，不是子孙。
+  //    必须先展开函数组件 —— Overlay 的 className 写在组件内部，
+  //    不展开的话整棵树里根本找不到 .dbs-overlay（假绿灯高发区）。
+  const ui = { ...I.createInitialUiState(), confirmingBackup: true };
+  const tree = expand(I.renderPanel(ui, {}));
+
+  const overlays = findAll(tree, (n) => String(n.props?.className ?? '').includes('dbs-overlay'));
+  assert.ok(overlays.length > 0, '前提：确认框应当渲染出一个浮层');
+
+  const bodies = findAll(tree, (n) => n.props?.['data-dbs-tabbody'] !== undefined);
+  assert.equal(bodies.length, 1, '应当只有一个页签内容容器');
+  const inside = findAll(bodies[0], (n) => String(n.props?.className ?? '').includes('dbs-overlay'));
+  assert.equal(inside.length, 0, '浮层不能放进页签容器里，否则 position:fixed 会相对它定位');
 });
 
 test('★ 弹框配色不许硬编码深色 —— 本机应用是浅色主题，深底深字等于不可读', () => {

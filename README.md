@@ -1,0 +1,279 @@
+# dsh-backup-sync
+
+> 给 [DeepSeek Harness](https://github.com/deepseek-ai) 的**备份 / 恢复 / 换机同步**插件：
+> 把技能、插件、配置、记忆、待办打成一个 `tar.gz`，换台电脑**按模块增量导入**，
+> 靠一份基线库做三方合并 —— 不覆盖你在这台机器上新改的东西。
+
+[![CI](https://github.com/Arlenman/dsh-backup-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/Arlenman/dsh-backup-sync/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](package.json)
+
+---
+
+## 目录
+
+- [它解决什么问题](#它解决什么问题)
+- [和 dsh-backup 有什么不同](#和-dsh-backup-有什么不同)
+- [安装](#安装)
+- [界面](#界面)
+- [六个模块](#六个模块)
+- [文件放在哪](#文件放在哪)
+- [增量导入：基线三方合并](#增量导入基线三方合并)
+- [两条红线](#两条红线)
+- [定时备份](#定时备份)
+- [HTTP 接口](#http-接口)
+- [开发](#开发)
+- [已知限制](#已知限制)
+- [English](#english)
+- [License](#license)
+
+---
+
+## 它解决什么问题
+
+DSH 的「资产」散落在**两个地方**：
+
+| 资产 | 位置 |
+| --- | --- |
+| 技能（工作流本体） | `<userHome>/.agents/skills` |
+| 插件清单 / 依赖锁 | `<dshHome>/profiles/<profile>/` |
+| 核心配置（provider、模型、主题、插件配置） | `<dshHome>/profiles/<profile>/cordis.patch.yml` |
+| 记忆 / 待办 | `<dshHome>/memories/` |
+| 对话记录 | `<dshHome>/sessions/` |
+
+其中 `<dshHome>` 默认是 `~/.dsh`，而**技能根本不在它下面**。
+换电脑时最容易丢的恰好是技能和配置 —— 而它们又最值钱。
+
+这个插件把上面这些一起打包，并且解决第二个问题：**导入时不要把人家的新东西冲掉**。
+
+## 和 dsh-backup 有什么不同
+
+[`@xiaoyuyu6420/dsh-backup`](https://www.npmjs.com/package/@xiaoyuyu6420/dsh-backup) 是一个成熟的全量备份插件（本插件作者也在用），但它的 `skills` 类型指向 `~/.dsh/skills`，而真实技能库在 `~/.agents/skills` —— **它一个技能都备不到**。
+
+两者的定位：
+
+| | dsh-backup | dsh-backup-sync（本插件） |
+| --- | --- | --- |
+| 备份范围 | `~/.dsh` 整棵树（可按类型排除） | 六个模块，**含 `~/.agents/skills`** |
+| 导入语义 | 恢复（覆盖） | **带基线的三方合并**，逐文件给差异 |
+| 冲突处理 | — | 弹差异预览，逐文件选保留哪边 |
+| 云同步 | 内置 GitHub 私有仓库同步 | 推送到「同步目录」（可指向任何被同步工具盯着的目录） |
+| 救援 | 有进程外救援脚本 | — |
+
+**两个可以同时装**，互不干扰（备份目录、状态文件都不同名）。
+
+## 安装
+
+```bash
+# npm 源
+dsh plugin --profile web add dsh-backup-sync
+
+# 或直接从 GitHub 装（推荐锁定 commit）
+dsh plugin --profile web add github:Arlenman/dsh-backup-sync
+```
+
+桌面版（Electron）在 **设置 → 插件** 里填 `dsh-backup-sync` 或
+`github:Arlenman/dsh-backup-sync` 安装。
+
+> **注意**：插件的宿主半边（HTTP 路由）**不热重载**，装完要重启一次 DSH；
+> 界面半边刷新页面即可生效。
+
+要求：DSH `0.2.0-rc.2`，Node.js ≥ 22。零运行时依赖（只用 Node 内置模块 + 平台提供的 `react`）。
+
+## 界面
+
+入口在 **设置 → 备份同步**（与「插件」「技能」并列），四个页签：
+
+| 备份 | 历史版本 |
+| --- | --- |
+| ![备份](docs/images/01-backup.png) | ![历史版本](docs/images/02-history.png) |
+
+| 导入 | 同步 |
+| --- | --- |
+| ![导入](docs/images/03-import.png) | ![同步](docs/images/04-sync.png) |
+
+- **备份**：勾模块 → 填输出目录 → 打一个包（可选打包前跑校验）。
+- **历史版本**：列出输出目录里的包（时间、体积、来源机器、模块数、文件数），
+  可就地**校验**（比对 sha256）、**导入**、**复制路径**。
+- **导入**：选一个包 → 扫描 → 逐文件差异预览（新增 / 修改 / 删除 / 冲突）→ 逐项裁决 → 应用。
+  应用前自动把当前状态快照到 `<输出目录>/pre-restore-<时间戳>/`。
+- **同步**：把包推到「同步目录」（OneDrive / 坚果云 / 群晖 / U 盘都行），带 sha256 校验。
+
+## 六个模块
+
+| 模块 | 界面名 | 根目录 | 收录内容 | 默认 |
+| --- | --- | --- | --- | --- |
+| `skills` | 技能 | `<userHome>/.agents/skills` | 整棵技能树（按技能目录计数） | ✅ |
+| `plugins` | 插件 | `<dshHome>/profiles/<profile>/` | `package.json`、`pnpm-lock.yaml`、`.npmrc`、`pnpm-workspace.yaml` | ✅ |
+| `config` | 配置 | `<dshHome>/profiles/<profile>/` 与 `<dshHome>/` | `cordis.patch.yml`、`settings.yaml`、`AGENTS.md` | ✅ |
+| `memory` | 记忆 | `<dshHome>/memories/` | `MEMORY.md` / `USER.md` / `KEY.md` / `daily/*.md` 等（**不含**待办文件） | ✅ |
+| `todo` | 待办 | `<dshHome>/memories/` | `TODOS-life.md`、`TODOS-work.md`、`projects/<hash>/TODOS.md`、`daily/YYYY-MM-DD.todo.md` | ✅ |
+| `sessions` | 对话 | `<dshHome>/sessions/` | 全部会话记录 | ⬜ **本地专用 · 不上云** |
+
+两个设计细节：
+
+1. **模块按「文件模式」切分，不按目录切分**。记忆与待办同居 `memories/` 一棵树：
+   `projects/<hash>/MEMORY.md` 是记忆，隔壁的 `projects/<hash>/TODOS.md` 是待办。
+   按目录切必然切错，所以用文件模式互斥认领（有测试钉住「每个路径恰好属于一个模块」）。
+2. **对话默认不勾选**，并在界面上标注「本地专用 · 不上云」——它体积大、含隐私，
+   而且通常没必要跟着人走。
+
+## 文件放在哪
+
+插件自己的状态（都在本机，不进包）：
+
+```
+<dshHome>/backup-sync/settings.json   # 你的设置（输出目录、同步目录、定时…）
+<dshHome>/backup-sync/state.json      # 基线库：上次打包时各文件的 sha256
+```
+
+备份包（默认输出目录，可用设置覆盖）：
+
+```
+dsh-sync-20261014-093012.tar.gz        # 归档本体
+dsh-sync-20261014-093012.tar.gz.sha256 # 边车校验文件
+```
+
+包内结构（归档内是**归一化布局**，与机器无关）：
+
+```
+dsh/      ← 对应 <dshHome> 下的文件（profiles/… memories/… sessions/…）
+agents/   ← 对应 <userHome>/.agents 下的文件（skills/…）
+manifest.json   ← 格式版本、时间、来源机器、模块清单、逐文件 sha256
+```
+
+默认输出目录的选取规则：Windows 上确实存在 `D:` 盘、且 `<dshHome>` 位于
+`<userHome>` 之下（判定为「真实安装」）时用 `D:\dsh-backups-sync`；
+否则落在 `<userHome>/dsh-backups-sync`。
+**绝不默认写到一个这台机器上不存在的路径。**
+
+## 增量导入：基线三方合并
+
+导入不是「解压覆盖」，而是三方合并：
+
+```
+base   = 基线库（上次打包时，两边都认可的共同祖先）
+ours   = 这台机器现在的状态
+theirs = 包里的状态
+```
+
+逐文件判定：
+
+| 情况 | 动作 |
+| --- | --- |
+| 只有 `theirs` 变了 | 采纳包里的版本 |
+| 只有 `ours` 变了 | **保留本地**，静默跳过 |
+| 两边都变了且内容不同 | **冲突** → 弹差异预览，逐个选 |
+| 本地删了、包里改了 | 冲突（默认保留本地） |
+| 包里删了、本地没动 | 删除（需显式开启 `allowDelete`，默认关闭） |
+
+几个刻意的选择：
+
+- **冲突默认「保留本地」**。裁决完之后，基线记的是**归档版本**而不是本地版本 ——
+  否则下次导入会把用户刚裁决保留的版本判成「归档改了、本地没动」而擅自覆盖，裁决等于白做。
+- **合并粒度按内容类型定**：技能 = 整个目录；配置文件 = 整个文件（默认保留本地）；
+  插件清单 = JSON 字段级；记忆 = 按内容行去重；待办 = 按 8 位十六进制 id；会话 = 整个文件。
+- **删除是关着的**。`allowDelete` 默认 `false`，想同步「删除」这个动作必须手动开。
+- **导入前自动快照**：`<输出目录>/pre-restore-<时间戳>/` 就是一份能原样还原的包。
+
+## 两条红线
+
+1. **凭据永不进包、永不进基线。** `~/.dsh/.credentials.yaml` 之类的凭据文件在扫描阶段
+   就被排除（23 个凭据文件名 + 7 个后缀的黑名单，另有 1 MiB 内容闸）。
+   包里不可能出现 API key。
+2. **对话默认不参与。** 想备份对话要手动勾 —— 它只在本机流转，不会被同步。
+
+## 定时备份
+
+在设置里打开后，插件在宿主进程里定时打包。两种频率：**每天某个时刻**（默认 `03:00`）
+或**每隔 N 小时**（1–720，默认 24）。约定：
+
+- **DSH 没开就不补跑**（不做启动补跑，也不装系统计划任务）；
+- **失败不重试**，下一次到点照常；
+- 只清理**自己打的包**，且 `keep <= 0` 表示不清理；
+- 「立即跑一次」按钮绕过开关，用于验证；
+- 定时范围默认跟随「备份」页当前勾选的模块，可 pin 成固定集合；
+- **对话永远不会进定时包。**
+
+## HTTP 接口
+
+宿主半边在 `/api/dsh-backup-sync` 下注册了 12 条路由（都走 DSH 自带的连接鉴权）：
+
+```
+GET  /state               GET  /settings          POST /settings
+POST /backup              POST /import/preview    POST /import/apply
+POST /verify              POST /sync/push         GET  /sync/list
+POST /schedule            POST /schedule/run-now
+GET  /skills              GET  /file
+```
+
+## 开发
+
+```bash
+git clone https://github.com/Arlenman/dsh-backup-sync.git
+cd dsh-backup-sync
+npm test          # node --test，423 项，零依赖、不需要 install
+```
+
+目录：
+
+```
+lib/index.js      宿主入口（注册 HTTP 路由 + 定时器）
+lib/client.js     界面半边（手写 CJS bundle，注册 settings.section）
+lib/scan.js       扫描六个模块 → 文件清单 + 哈希
+lib/archive.js    打包 / 解包 / manifest / sha256 校验
+lib/diff.js       三方合并与冲突判定
+lib/apply.js      应用导入计划（带快照回滚）
+lib/guard.js      凭据黑名单（永不进包）
+lib/schedule.js   定时器
+lib/routes.js     12 条 HTTP 路由
+docs/notes/       逆向内核得到的插件契约（模块加载器、settings 槽位）
+docs/plans/       设计文档与实施计划（含逐条决策理由）
+test/             node:test 单测（含跨平台路径断言）
+```
+
+仓库里的三份文档对写 DSH 插件的人可能有用：
+
+- [`docs/notes/module-loader-contract.md`](docs/notes/module-loader-contract.md) —— 客户端模块加载器契约（种子表、`dsh.client`、槽位 API）
+- [`docs/notes/settings-section-contract.md`](docs/notes/settings-section-contract.md) —— `settings.section` 槽位的注册契约
+- [`docs/plans/`](docs/plans/) —— 本插件的设计与实施记录
+
+### 仓库内的脚本
+
+`scripts/` 下的几个脚本是**开发期真机验收工具**，它们读真实的 `~/.dsh`：
+
+| 脚本 | 作用 | 会写哪里 |
+| --- | --- | --- |
+| `scan-report.mjs` | 只读扫描，打印各模块文件数/体积 | 不写 |
+| `guard-report.mjs` | 校验凭据黑名单是否真的拦住了 | 不写 |
+| `backup-now.mjs` | 命令行打一个包 | `--out` 指定目录，**并更新真实基线库**（`--no-baseline` 可跳过） |
+| `verify-restore.mjs` | 拿真实包在空目录里跑完整导入并逐文件核对 | 只写仓库下 `.tmp-restore-*`，跑完删除 |
+
+## 已知限制
+
+- 归档格式为 `tar.gz`（Node 内置 `zlib`），**不支持加密**。要加密请用同步目录那一侧的工具。
+- 导入的合并粒度里，配置文件是「整文件」级别：两边都改了同一个配置文件就会判冲突，
+  不会做字段级合并（除了插件清单的 JSON）。
+- 定时器跑在宿主进程里，DSH 退出即停（这是有意的，见上）。
+- 界面半边是手写的 CJS bundle（本机没有打包器），所以没有 JSX、没有 TS。
+
+## English
+
+**dsh-backup-sync** is a backup / restore / machine-migration plugin for DeepSeek Harness.
+
+- **Six modules**: skills (`~/.agents/skills` — which other backup plugins miss), plugin manifests,
+  core config, memories, todos, and sessions (opt-in, local-only).
+- **Three-way merge import**: a local baseline records the hashes of the last backup, so importing
+  on another machine never silently overwrites changes made there. Conflicts show a per-file diff.
+- **Credentials never enter an archive** (deny-list of credential filenames/suffixes).
+- **Zero runtime dependencies**, `tar.gz` + sha256 sidecar, settings entry under **Settings → 备份同步**.
+
+```bash
+dsh plugin --profile web add dsh-backup-sync
+```
+
+Requires DSH `0.2.0-rc.2` and Node.js ≥ 22. MIT licensed.
+
+## License
+
+[MIT](LICENSE) © 2026 Arlenman

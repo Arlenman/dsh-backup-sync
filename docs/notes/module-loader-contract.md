@@ -42,8 +42,11 @@ window.__ModuleLoader__.load({
 | 内核自带 UI 范例（**未压缩、可直接读**） | `@deepseek-ai/dsh-client-ui-plugin-manager/lib/client.js`（3786 行） | 「插件」页的 `sidebar.panellist` + `main` 注册全文 |
 | 侧边栏消费端 | `@deepseek-ai/dsh-client-ui-sidebar/lib/client.js:452-527` | 面板列表怎么读注册项、点击后干什么 |
 
-槽位目录已抽出成本项目内文件：`docs/notes/dsh-slot-catalog.json`（90 条，225 KB）。
-重新抽取的命令：`node <工具目录>\extract-slot-catalog.mjs`。
+槽位目录（90 条）可以从内核自己的 `dsh-cordis-client-runner/lib/client.js` 里再抽一遍，
+抽取脚本没有随仓库发布（它读的是解包后的内核源码）；本文第 7 节按用途列了常用的那些槽位。
+
+> 为什么不把抽出来的 225 KB 目录 JSON 放进仓库：那是对内核 TypeScript 声明文件的**逐字拷贝**，
+> 属于第三方代码，放进本仓库（MIT）会造成许可混淆。要看全量目录，照上表的出处自己抽一遍即可。
 
 ---
 

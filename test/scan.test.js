@@ -7,6 +7,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { rm } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { scan, summarize } from '../lib/scan.js';
 import { makeFixture, withFixture as withFixtureRaw } from './fixture.js';
 
@@ -101,6 +103,47 @@ test('每个条目都带 sha256 / size / mtimeMs，哈希稳定可复现', async
 
 test('扫描不产生警告（fixture 全部可读）', async () => {
   await withFixture((r) => assert.deepEqual(r.warnings, []));
+});
+
+// ───────────────────────── 凭据守卫（承重） ─────────────────────────
+
+/**
+ * ★ 这条是「凭据永不进包」真正的落点。
+ *
+ * 光有 guard.js 的单测不够：守卫要**真的接在扫描链路上**才算数
+ * （真机验收时就是在包里看到了 `profiles/desktop/.npmrc`，才回头确认这道闸的）。
+ * `.npmrc` 恰恰是最容易被忽略的一个 —— 名字不在黑名单里，只有内容能判。
+ */
+test('★ 带 _authToken 的 .npmrc 被内容闸剔除，并如实记录原因（绝不静默跳过）', async () => {
+  await withFixture(async (fx) => {
+    const npmrc = join(fx.roots.dshHome, 'profiles', fx.roots.profile, '.npmrc');
+    await writeFile(
+      npmrc,
+      'registry=https://registry.npmjs.org/\n//registry.npmjs.org/:_authToken=npm_AbCdEfGhIjKlMnOpQrStUvWx\n',
+      'utf8',
+    );
+    const r = await scan(fx.roots);
+
+    const paths = r.modules.plugins.entries.map((e) => e.relPath);
+    assert.ok(!paths.includes('.npmrc'), '带令牌的 .npmrc 绝不能进计划');
+    assert.ok(paths.includes('package.json'), '同模块的其他文件不受影响');
+
+    const hit = r.credentials.find((c) => c.relPath === '.npmrc');
+    assert.ok(hit !== undefined, '被剔除的文件必须出现在 credentials 里');
+    assert.equal(hit.moduleId, 'plugins');
+    assert.match(hit.reason, /npm 认证令牌/);
+    assert.ok(!hit.reason.includes('npm_AbCdEfGhIjKlMnOpQrStUvWx'), '原因里不许复述完整令牌');
+    assert.match(hit.reason, /_authT…Wx/, '要给出打码片段（留头 6 尾 2），用户才判得出是不是误报');
+  });
+});
+
+test('不带令牌的 .npmrc 正常进包（守卫别误伤真配置）', async () => {
+  await withFixture(async (fx) => {
+    await writeFile(join(fx.roots.dshHome, 'profiles', fx.roots.profile, '.npmrc'), 'store-dir=D:\\pnpm-store\n', 'utf8');
+    const r = await scan(fx.roots);
+    assert.ok(r.modules.plugins.entries.map((e) => e.relPath).includes('.npmrc'));
+    assert.deepEqual(r.credentials, []);
+  });
 });
 
 test('某个根不存在时记 exists=false 而不是报错', async () => {

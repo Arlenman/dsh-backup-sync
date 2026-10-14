@@ -69,7 +69,7 @@ test('★ /state 回传调度设置与调度状态 —— 界面靠它渲染定�
 
     const v = body.scheduleView;
     assert.ok(v !== undefined, '/state 必须带 scheduleView');
-    assert.equal(v.description, '每天 03:00', '客户端不重复实现文案，由宿主给');
+    assert.equal(v.description, '已关闭（配置：每天 03:00）', '关着的时候不能只说「每天 03:00」，读接口的人会以为它在跑');
     assert.equal(v.due, false);
     assert.equal(v.reason, 'disabled');
     assert.equal(v.nextRunAt, null);

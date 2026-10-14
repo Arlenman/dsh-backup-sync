@@ -210,10 +210,14 @@ test('lastRunAt 是垃圾值时当作「没跑过」，不能因此每 60 秒跑
 
 // ───────────────────────── describeSchedule ─────────────────────────
 
-test('describeSchedule：中文描述跟着模式走', () => {
-  assert.equal(describeSchedule(normalizeSchedule({ mode: 'daily', at: '03:00' })), '每天 03:00');
-  assert.equal(describeSchedule(normalizeSchedule({ mode: 'interval', hours: 1 })), '每 1 小时');
-  assert.equal(describeSchedule(normalizeSchedule({ mode: 'interval', hours: 48 })), '每 2 天');
+test('describeSchedule：中文描述跟着模式走，关闭状态要写出来', () => {
+  assert.equal(describeSchedule(normalizeSchedule({ enabled: true, mode: 'daily', at: '03:00' })), '每天 03:00');
+  assert.equal(describeSchedule(normalizeSchedule({ enabled: true, mode: 'interval', hours: 1 })), '每 1 小时');
+  assert.equal(describeSchedule(normalizeSchedule({ enabled: true, mode: 'interval', hours: 48 })), '每 2 天');
+  // 关着的时候只回「每天 03:00」，读接口的人会以为它正在跑。
+  assert.equal(describeSchedule(normalizeSchedule({ enabled: false, mode: 'daily', at: '03:00' })), '已关闭（配置：每天 03:00）');
+  assert.equal(describeSchedule(normalizeSchedule({ enabled: false, mode: 'interval', hours: 6 })), '已关闭（配置：每 6 小时）');
+  assert.equal(describeSchedule(normalizeSchedule({})), '已关闭（配置：每天 03:00）', '默认就是关闭');
 });
 
 // ───────────────────────── pruneKeep ─────────────────────────

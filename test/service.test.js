@@ -59,6 +59,23 @@ test('defaultArchiveDir：显式覆盖优先，否则本机 D 盘', () => {
   }
 });
 
+test('★ defaultArchiveDir：夹具 roots 绝不许落到整机共享的 D:\\dsh-backups-sync', () => {
+  // 真实安装：DSH_HOME 在用户目录之下 —— 保持 D 盘默认（本机 2026-10-14 实测口径不变）。
+  const real = { dshHome: 'C:\\Users\\me\\.dsh', userHome: 'C:\\Users\\me', profile: 'desktop', agentsSkills: 'C:\\Users\\me\\.agents\\skills' };
+  // 测试夹具：临时目录下的**兄弟**目录（test/fixture.js 就是这种形状）。
+  const fixture = { dshHome: 'D:\\tmp\\abc\\dsh', userHome: 'D:\\tmp\\abc\\home', profile: 'desktop', agentsSkills: 'D:\\tmp\\abc\\agents' };
+  const fixtureOut = defaultArchiveDir(fixture);
+  assert.equal(fixtureOut, join('D:\\tmp\\abc\\home', 'dsh-backups-sync'));
+  assert.notEqual(fixtureOut, 'D:\\dsh-backups-sync', '夹具数据绝不能打进用户真实备份目录');
+  // 显式覆盖仍然最高优先级（真实安装与夹具都一样）。
+  assert.equal(defaultArchiveDir(fixture, 'D:\\work\\x'), 'D:\\work\\x');
+  // 缺字段不能抛，按不安全处理（退到 userHome 下）。
+  assert.equal(defaultArchiveDir({ userHome: 'D:\\tmp\\abc\\home' }), join('D:\\tmp\\abc\\home', 'dsh-backups-sync'));
+  if (process.platform === 'win32' && existsSync('D:\\')) {
+    assert.equal(defaultArchiveDir(real), 'D:\\dsh-backups-sync', '真实安装口径不许变');
+  }
+});
+
 test('sanityOf：profile 目录不在就拒绝写操作', async () => {
   await withFixture(async (fx) => {
     const good = sanityOf(fx.roots);

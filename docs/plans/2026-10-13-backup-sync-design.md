@@ -340,3 +340,244 @@ daily/YYYY-MM-DD.todo.md           → daily 轨
 只有两个 `daily/*.todo.md`，共 3 条（且均已 `done`）。即 dtodo 实际使用量很低。
 这不影响设计，但界面上「待办 3 条」会显得突兀，需在文案上说明「四轨中只有 daily 轨有数据」。
 
+---
+
+## 11. M5：定时备份 · 技能清单 · 文件只读查看（2026-10-14）
+
+### 11.1 需求原文与范围裁剪
+
+用户原话（配一张设置弹窗截图）：
+
+> 把备份同步这个不是很常用的功能入口收到这里面去；然后增加一个定时备份的功能；
+> 然后技能列表支持点击弹窗查看技能描述，也支持鼠标悬停显示技能描述，也支持双击复制技能名称；
+> 然后插件，配置哪些文件支持点击弹窗查看内容
+
+四件事，第一件**用户自己撤回了**：
+
+> 对喔，我只想到入口，没有想到完整工作区，那不入口位置了，但是其他的还是需要改一下
+
+撤回的理由是对的：`备份同步` 是一个**带状态的完整工作区**（六个模块的勾选、包列表、冲突裁决、
+同步适配器），塞进设置弹窗那个 ≈600 px 宽的内容列里会把两件事都做坏。所以
+**入口原地不动**（`sidebar.panellist` 保持原样），也**没有**注册 `settings.section`。
+
+剩下三件（定时备份 / 技能清单交互 / 文件内容查看）即 M5 全部范围。
+
+### 11.2 定时备份：先把「无人值守」的语义钉死
+
+自动写盘是**不可逆**的动作（会覆盖基线、会删旧包），所以语义必须先定死再写代码。
+四个决策（均经用户确认）：
+
+| 决策 | 取值 | 理由 |
+|---|---|---|
+| 到点但 DSH 没开 | **跳过，不补跑** | 用户原话选 A：「到点跑，DSH 没开就跳过」。补跑会在开机瞬间打一堆包，且开机时磁盘/CPU 正忙 |
+| 实现方式 | **进程内心跳**（60 s tick），不做系统计划任务 | 不写注册表、不装服务、不弹 UAC；DSH 不在就自然不跑，与上一条自洽 |
+| 失败 | **不重试** | 重试会把「磁盘满」变成持续写盘风暴；失败原因留在 `schedule.json` 与界面上 |
+| 「对话」模块 | **硬闸剔除**，界面写明 | 无人值守场景下没人能拦一下；`sanitizeScheduledModules()` 无条件剥掉 `sessions` |
+
+**范围默认值**（这一条是设计上最容易撒谎的地方）：`moduleIds: null` 表示
+「用各模块的默认勾选」（技能/插件/配置/记忆/待办），**不是**「跟随备份页签上的手动勾选」。
+最初界面写的是「备份内容跟随上面的勾选」——**是假的**，已改成照实说明，并额外提供
+「固定用上面勾选的模块」开关（pin）把范围钉死成当次勾选。`moduleIds: []` 保持空数组
+（表示「什么都不打包」），**不升级**为默认全勾。
+
+### 11.3 调度状态机与锚点
+
+`schedule.json`（`~/.dsh/backup-sync/schedule.json`，与 `settings.json` 分开放：
+前者是**运行状态**，后者是**用户意图**，混在一起会让「重置状态」误伤配置）：
+
+```
+lastPointAt  上一次「判定时刻」的锚点 —— 不是「上次跑成功的时间」
+lastRunAt    上次真的跑了的时间
+lastResult   上次结果 {archive, pruned}
+lastError    上次失败原因
+runCount     累计跑了几次
+```
+
+`tick()` 的分支（永不抛错）：
+
+1. 开关关着 → `{ran:false, reason:'disabled'}`
+2. `lastPointAt === null`（首次启用/改了计时字段）→ **只锚定，不跑**（`reason:'anchored'`）
+3. 到点了但错过超过 `MISS_GRACE_MS`（10 min）→ **推进锚点**，`reason:'missed'`，不跑
+4. 正常到点 → `execute()`
+
+**★ 真机抓到的 bug**：第 3 分支最初只写了 `reason:'missed'` 而**没有推进 `lastPointAt`**，
+于是「错过一次」之后锚点永远停在过去，`dueInfo` 每次都判「已过期」→
+**定时备份从此再也不会跑**，而且界面上看不出任何异常。修法是 missed 分支同样把
+`lastPointAt = now` 写回（已加回归测试）。
+
+另一个刻意的取舍：**改计时字段才重置锚点，改保留份数不动锚点**。
+`TIMING_KEYS = ['enabled','mode','at','hours']`——把 keep 也算进去的话，用户改一下
+「保留几份」就会把已经等了几小时的下一次运行时间推倒重来。
+
+### 11.4 技能清单：一行一个技能 + 单击/双击分流
+
+技能库在 `~/.agents/skills`（**不在 `~/.dsh` 里**，这正是本插件存在的首要理由）。
+10 个技能、19 个文件、139.6 KB。卡片展开后的形态：
+
+- **一行一个技能**：技能名 + `N 个文件 · X KB`（+ 缺 `SKILL.md` 的徽标）
+- **悬停** → 原生 `title` 显示描述（不额外做浮层：原生 tooltip 不会被面板滚动裁掉）
+- **单击** → 弹窗：技能名 / 目录 / 文件数 / 入口文件 / 最近改动 + **完整描述** + **文件明细**
+- **双击** → **复制技能名**（不是路径）
+
+单击与双击共用同一个元素，必须分流：`clickGate(240)` 让单击延迟 240 ms 才生效，
+期间来了第二次点击就**取消**那次单击（否则双击会先弹窗再复制）。
+`useRef` 持有 gate 实例，跨渲染保持。
+
+描述来源有四级回退（`describeSkill`）：frontmatter 的 `description` → 正文首段 →
+正文首个标题 → 无。加「正文首个标题」这一级是因为真机上踩到过：只有一行标题的
+`SKILL.md` 会得到 `description: null`，界面上就成了一行没有描述的技能。
+
+### 11.5 文件只读查看：五道闸
+
+`POST /file`（`{moduleId, relPath}`）→ `describeModuleFile()`。**`relPath` 是相对「该模块的
+根目录」的路径，不是相对 `~/.dsh`**——这是最容易搞错的一点。五道闸依次是：
+
+1. 路径合法性：拒绝绝对路径、盘符、`..`（`normalizeRelPath`）
+2. 必须落在所选模块的根目录内（`resolveModuleFile` 拿 `listModuleRoots` 反查）
+3. 必须存在且是普通文件（目录/设备文件都拒）
+4. **文件名闸**（`inspectPath`，23 个 basename + 7 个后缀，无条件拒，内容永不读）
+5. **内容闸**（`inspectContentMatch`，命中则**不给内容**，只给打码片段）
+
+体积上限 `MAX_VIEW_BYTES = 512 KiB`，超了给**前 512 KiB + 明说已截断**（绝不静默截断）；
+二进制按前 8000 字节嗅探，是二进制就只给元信息。
+
+**★ 所有拒绝都是 `jsonOk` + `viewable:false` + 中文 `reason`**，不是 `jsonFail`。
+这是有意的：`{ok:false}` 在本项目里等于「接口坏了」，而「这个文件不该给你看」
+是一个**正常答案**。界面对应地把它渲染成黄色说明块，而不是红色错误条。
+
+### 11.6 新增接口（4 条，共 12 条）
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| GET/POST | `/schedule` | 读/写定时设置。只合并 `enabled/mode/at/hours/keep/moduleIds/includeBaseline`；**改了计时字段才重置锚点** |
+| POST | `/schedule/run-now` | 立即跑一次。**绕过开关**（这是显式用户动作），`busy !== null` 时界面禁用 |
+| GET/POST | `/skills` | 技能清单（含 `bytesHuman`、`root`） |
+| POST | `/file` | 单文件只读查看（五道闸） |
+
+`/state` 的返回里增加了 `scheduleView`：`{description, due, reason, scheduledAt, nextRunAt, state, statePath}`。
+`description` 在**关闭时也必须说清「已关闭」**——`describeSchedule` 原本关着也返回
+「每天 03:00」，读的人会以为它在跑；现在返回「已关闭（配置：每天 03:00）」。
+
+### 11.7 真机验收（19399 独立实例）与它抓到的三个真缺陷
+
+宿主半边**不热重载**（`isExcluded` 只排 `node:` 与 `/node_modules/`，`link:` 安装解析到真实路径
+也一样不重载——已实测证伪过一次），所以验新宿主代码必须另起实例：
+`dsh web --port 19399 --no-open`，界面驱动用 `DBS_UI_ORIGIN=http://127.0.0.1:19399`。
+
+新增两个验收脚本，都进了 `run-all-verify.mjs`：
+
+- `step15.mjs`（37 项）：默认关且文案诚实 → 开启后表单/摘要联动 → 保存落盘 + 锚点重置 →
+  **立即跑一次真出包**（`tar -tzf` 反查：无 `sessions/`、有 `agents/skills/`、有 `manifest.json`
+  与 `sync/state.json`、无任何凭据文件名、`.npmrc` 里无令牌）→ 关掉再保存
+- `step16.mjs`（37 项）：技能卡展开 → 10 行 → 悬停 title → 单击弹窗 → 双击复制**技能名** →
+  文件行弹窗真渲染内容 → 技能弹窗里点文件 → 两层弹窗叠放与逐层关闭
+
+**三个真缺陷（都是这一轮照出来的，不是推测）：**
+
+1. **★ 定时备份关不掉**：关闭态只渲染一句说明，而「保存定时设置」按钮写在开启分支里 →
+   一取消勾选，按钮跟着消失，用户**没有任何办法把「关掉」存下去**。
+   修法：判据从「开关是不是开着」改成「草稿和已存的不一样」（`schedDirty`），
+   关闭 + 有改动时照样给保存按钮。
+2. **★ profile 名解析错**：`resolveRoots` 用 `env.DSH_PROFILE || 'desktop'` 兜底，而
+   `DSH_PROFILE` 是 `dsh-shell-env` 在**每次 shell 工具执行时**现算的变量，宿主进程里
+   根本没有 → 永远落到 `desktop`。后果：在 `dsh web`（profile = web）实例上打的包，
+   里面装的是 `profiles/desktop/*`；换一台只有 web profile 的机器，
+   `sanityOf()` 会因为 `profiles/desktop` 不存在而**拒绝一切备份与导入**。
+   修法：权威来源改成 `profileContext` 服务（`dsh/lib/profile-boot-*.js` 里
+   `hostCtx.provide("profileContext", {name, dir, …})`），`DSH_PROFILE` 降为兜底。
+3. **`.npmrc` 被误判成凭据**（验收脚本自己的问题，但值得记）：`.npmrc` 是「插件」模块的
+   正常配置文件，它**该**进包；带 `_authToken` 的才会被内容闸剔除。断言改成按文件名闸的
+   完整黑名单 + 真去包里读一遍 `.npmrc`。同时补了一条此前缺失的**扫描级**测试：
+   带令牌的 `.npmrc` 必须从计划里消失、并出现在 `credentials[]` 里、原因里带打码片段
+   —— 光有 `guard.js` 的单测不够，守卫要**真的接在扫描链路上**才算数。
+
+### 11.8 测试与验收基线（M5 后）
+
+- `node --test` → **421/421 通过**（新增 `test/paths.test.js` 6 项、`test/scan.test.js` 2 项、
+  `test/client.test.js` 3 项、`test/service.test.js` 1 项）
+- `node run-all-verify.mjs`（10 个脚本）→ 全绿；`step15` 37/37、`step16` 37/37
+- 每步之前都会把 `settings.json` / `state.json` / `schedule.json` 还原到起跑快照
+  （不还原的话上一步留下的 `outDir` / 基线会渗进下一步，产出**假红**）
+
+### 11.9 第一次总跑（10 脚本）为什么红了 5 个：三类原因，一条产品缺陷都没有
+
+第一次跑完是 5 红（`step9` 21/25、`step10` 28/29、`step12`/`step13` `exit=null`、
+`step15` 0/0）。逐条查完，**产品本身没有问题，红的全是验收工具与历史残留**：
+
+1. **`step12`/`step13`/`step15` 连挂 —— 驱动的「点入口」是坏的（真因）**。
+   `ensurePanel()` 用文档级 `clickByText('备份同步')` 找侧边栏入口，而它取**最内层/最后**一个
+   命中：面板一开，命中的就是**面板自己的标题** `H2.dbs-h2`；面板没开时命中侧边栏按钮
+   **里面那个 SPAN**，而 CDP 的 `Input.dispatchMouseEvent` 打在这个 SPAN 上
+   `hitOk: true`、返回 `clicked: true`，**面板却根本不开**（已单独复现）。
+   之前所有步骤都是「面板本来就开着」所以没人发现；`step15` 的 `{reload:true}` 一刷新，
+   后面的步骤就必须真去点，于是从 `step12` 起集体卡死到 10 分钟超时（`spawnSync` 超时
+   `status` 就是 `null`）。**修法**：新增 `clickPanelEntry()` —— 只在 `nav` 里找入口、
+   用页面内 `element.click()`、坐标点击只作兜底。修完 `ensurePanel` 用时 624 ms。
+2. **`step9` 4 红 —— 3 条是过期断言 + 1 条是定位错**。
+   前 3 条还在找模块卡里的 `.dbs-files li`（M5 已把逐文件明细移进技能弹窗，改判技能行）；
+   第 4 条 `baselineIncluded=true` 是**定位错**：基线开关从来没有 id，脚本按
+   「模块卡之外的第一个勾选框」兜底，M5 插进来的定时备份卡片把它截胡了 ——
+   关的是定时备份开关，断言却只看「找得到勾选框」，一直绿。已补
+   `id="dbs-include-baseline"` + `data-dbs-baseline`，并把断言改成「必须真的从 true 变 false」。
+3. **`step10` 1 红 —— 用户真实备份目录里多了一个夹具包**。
+   断言写死「仍是 6 个文件」，实际 9 个。多出来的那 3 个文件是
+   `dsh-sync-20261014-110144.*`（4 KB），`tar -tzf` 一看全是 `test/fixture.js` 的种子树
+   （`./dsh/profiles/desktop/*`、`projects/0c4f6561d62a/*`、两个夹具技能）——
+   **是夹具数据打进了用户真实备份目录**，已删除，并把断言改成
+   「相对起跑快照零新增」（写死个数在用户自己备份一次之后就必然假红）。
+
+**由此补上一条产品侧加固**：`defaultArchiveDir()` 原先只看「本机有没有 D 盘」，
+夹具 roots 也会落到整机共享的 `D:\dsh-backups-sync`。现加 `looksLikeRealInstall()`
+（`DSH_HOME` 必须位于 `userHome` 之下才算真实安装）：真实用户（`~/.dsh` ⊂ `~`）口径
+**零变化**，夹具自动落到自己的临时目录，从此「某条路径忘了传 outDir」也不会再污染
+用户的真备份目录 —— 那是会被「恢复」按钮当真的数据用的。
+
+### 11.10 第二次总跑为什么又红了 6 个：一类驱动缺陷（坐标点击）+ 一条真产品缺陷
+
+第二次总跑 6 红（`step9`/`step10`/`step12`/`step13`/`step14`/`step15`/`step16` 里的 6 个），
+逐条查完分成三类：
+
+1. **★ 一条真产品缺陷：「只改保留份数」会把定时锚点推到现在**。
+   `step15` 新增的断言（改 `keep` 后 `lastPointAt` 必须原地不动）红了，追下去发现
+   `saveSchedule()` 把**整个表单**POST 给 `/schedule`，而宿主侧 `TIMING_KEYS =
+   ['enabled','mode','at','hours']` 用 `k in body` 判断「有没有改计时字段」——
+   整表单提交时**永远非空**，于是**每次保存都重置锚点**，设计里「改保留份数不动锚点」
+   成了死代码。修法：客户端新增纯函数 `schedulePatch(saved, form)`，只发**真正变动过**的键
+   （`moduleIds` 按 `JSON.stringify` 比、`includeBaseline` 缺省即 `true`），一个键都没变
+   就**不发请求**。已用 7 组单元测试锁死。**这条只有靠「断言副作用、而不是断言请求发出」
+   才可能发现** —— 见下面第 3 条。
+2. **★ 一类驱动缺陷：坐标点击（`Input.dispatchMouseEvent`）在这套界面上会静默失手**，
+   累计踩了**四次**：侧边栏「备份同步」入口、设置入口（被 `DIV.wCInkW_mask` 吃掉）、
+   「查看 N 个技能」、「开始备份 / 确认备份」。共同症状：拿得到 rect、
+   `document.elementFromPoint` 也命中、`clicked: true`，**元素就是不响应**。
+   表现是「点了没反应」，很容易误判成产品坏了（`step9` 就因此超时在「等备份结果」）。
+   **修法**：`ui.mjs` 导出统一的 `clickIn(page, sel, label)` —— 在指定容器（多个则取
+   **最后一个**，因为弹窗会叠放）里按可见文字找按钮，然后**页面内 `element.click()`**；
+   `step9`/`step10` 里两份按坐标点击的本地副本已删除。
+3. **★ 断言必须打在「效果」上，不能打在「请求发出去了」上**。
+   `step15` 原来的写法是「保存后读磁盘上的 `lastPointAt`，断言它是 `null`」——
+   而调度器下一个 tick 会把 `null` 锚点**重新锚到 now**（`scheduler.js:231`，这是设计如此），
+   所以断言的是**一个会被合法覆盖的中间态**，怎么改都红。改成
+   「`null` 或与 now 相差 < 120 s」之后才腾出位置写出真正有判别力的第 2 条断言
+   （改 `keep` 前后锚点**必须逐字节相同**）—— 产品缺陷就是这么浮出来的。
+4. **★ 截图：`Page.captureScreenshot` 在 `Page.reload` 之后会永久挂起**（5 组对照实测）：
+   不刷新 79 ms / 刷新后默认参数**挂死 9 s 超时** / 刷新后 `fromSurface:false` 293 ms /
+   刷新后先 `Page.bringToFront` 再默认参数 88 ms。原因是后台标签页刷新后不再产合成帧，
+   CDP 就永远等那一帧；而 `cdp.mjs` 的 `send()` **既没有超时也不监听 socket 关闭**，
+   于是 promise 永不 settle → 整个脚本卡死 → `spawnSync` 记 `exit=null`，
+   看起来像断言失败。**修法**：`shot()` 一律 `Page.bringToFront` + `fromSurface:false`
+   + 8 s 超时竞速 + 最多重试 3 次，失败抛 `SHOT_FAILED`。
+5. **★ 夹具要自己先清场**。`step10` 的「含 10 个技能」被上一轮**超时被杀**的
+   `step12`/`step13` 留下的 `zz-e2e-*` 夹具技能打破（12 个）。写死个数的断言一律改成
+   **与真实技能库做集合比对**；`step12`/`step13` 在 `mkdir` 前先 `rm`，`step9` 跑完把
+   `settings.json` 还原（它会把 `outDir` 持久化成测试目录，下一轮 `step14` 就会看到 0 行）。
+6. **★ 弹窗会叠放，上一步崩了会污染下一步**。`step16` 崩在半路（`waitFor is not defined`）
+   把技能弹窗留在页面上，`step12`/`step13` 定位「确认框」时取的是**最上面那个**
+   `.dbs-dialog`，于是读到的是技能详情 —— 报「确认框里是技能详情」，看着像产品坏了。
+   **修法**：`ui.mjs` 的 `ensurePanel()` 开局先 `closeAllDialogs()`（只点弹窗自己的
+   「关闭」，不动 DOM，摘节点会让 React 状态与界面不一致）。
+
+**这一轮之后**：`node --test` **422/422**；`node run-all-verify.mjs` 10 个脚本
+**269/269 全绿、exit 0**（`step9` 28、`step10` 29、`step11` 38、`step16` 37、`step14` 14、
+`step12` 21、`step13` 34、`step15` 40、`step5` 12、`verify-19399-api` 16）。
+

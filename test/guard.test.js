@@ -88,6 +88,8 @@ test('内容闸：高信号凭据特征命中', () => {
     ['github_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz', 'GitHub 细粒度令牌'],
     ['OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz012345', 'OpenAI 风格密钥'],
     ['aws_access_key_id = AKIAIOSFODNN7EXAMPLE', 'AWS Access Key'],
+    // GitHub 的推送保护（GH013）会把「假但形状像」的 Slack 令牌字面量当成真凭据拦下来，
+    // 所以这里拆成两段拼接：扫描器看不到完整形态，而测试要的「令牌形态」一点没少。
     ['xox' + 'b-123456789012-abcdefghijklmnop', 'Slack 令牌'],
     ['Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0', 'JWT'],
     // 注意用无前缀令牌：`ghs_...` 会先命中「GitHub 令牌」规则（也对，只是测不到本条）

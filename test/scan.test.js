@@ -6,8 +6,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rm } from 'node:fs/promises';
-import { writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { scan, summarize } from '../lib/scan.js';
 import { makeFixture, withFixture as withFixtureRaw } from './fixture.js';
@@ -66,9 +65,11 @@ test('待办按条目数计，并给出四轨分布', async () => {
 
 test('插件与配置分开计数', async () => {
   await withFixture((r) => {
+    // `.npmrc` 不在里面：它被凭据守卫的文件名闸拦下了（机器本地路径 + 可能藏令牌，
+    // 见下面的守卫用例）。夹具里那个文件仍然躺在磁盘上，只是不进计划。
     assert.deepEqual(
       r.modules.plugins.entries.map((e) => e.relPath).sort(),
-      ['.npmrc', 'package.json', 'pnpm-lock.yaml'],
+      ['package.json', 'pnpm-lock.yaml'],
     );
     assert.deepEqual(
       r.modules.config.entries.map((e) => e.relPath).sort(),
@@ -112,37 +113,43 @@ test('扫描不产生警告（fixture 全部可读）', async () => {
  *
  * 光有 guard.js 的单测不够：守卫要**真的接在扫描链路上**才算数
  * （真机验收时就是在包里看到了 `profiles/desktop/.npmrc`，才回头确认这道闸的）。
- * `.npmrc` 恰恰是最容易被忽略的一个 —— 名字不在黑名单里，只有内容能判。
+ * `.npmrc` 现在由**文件名闸**无条件拦下（机器本地路径 + 可能藏令牌），
+ * 所以内容闸的覆盖改用别的文件名来钉 —— 内容闸必须独立生效，
+ * 不能因为「名字看着人畜无害」就放行带令牌的文件。
  */
-test('★ 带 _authToken 的 .npmrc 被内容闸剔除，并如实记录原因（绝不静默跳过）', async () => {
+test('★ 带 _authToken 的文件被内容闸剔除，并如实记录原因（绝不静默跳过）', async () => {
   await withFixture(async (fx) => {
-    const npmrc = join(fx.roots.dshHome, 'profiles', fx.roots.profile, '.npmrc');
+    const memDir = join(fx.roots.dshHome, 'memories');
+    await mkdir(memDir, { recursive: true });
     await writeFile(
-      npmrc,
-      'registry=https://registry.npmjs.org/\n//registry.npmjs.org/:_authToken=npm_AbCdEfGhIjKlMnOpQrStUvWx\n',
+      join(memDir, 'notes.md'),
+      '# 随手记\n//registry.npmjs.org/:_authToken=npm_AbCdEfGhIjKlMnOpQrStUvWx\n',
       'utf8',
     );
     const r = await scan(fx.roots);
 
-    const paths = r.modules.plugins.entries.map((e) => e.relPath);
-    assert.ok(!paths.includes('.npmrc'), '带令牌的 .npmrc 绝不能进计划');
-    assert.ok(paths.includes('package.json'), '同模块的其他文件不受影响');
+    const paths = r.modules.memory.entries.map((e) => e.relPath);
+    assert.ok(!paths.includes('notes.md'), '带令牌的文件绝不能进计划');
+    assert.ok(paths.includes('MEMORY.md'), '同模块的其他文件不受影响');
 
-    const hit = r.credentials.find((c) => c.relPath === '.npmrc');
+    const hit = r.credentials.find((c) => c.relPath === 'notes.md');
     assert.ok(hit !== undefined, '被剔除的文件必须出现在 credentials 里');
-    assert.equal(hit.moduleId, 'plugins');
+    assert.equal(hit.moduleId, 'memory');
     assert.match(hit.reason, /npm 认证令牌/);
     assert.ok(!hit.reason.includes('npm_AbCdEfGhIjKlMnOpQrStUvWx'), '原因里不许复述完整令牌');
     assert.match(hit.reason, /_authT…Wx/, '要给出打码片段（留头 6 尾 2），用户才判得出是不是误报');
   });
 });
 
-test('不带令牌的 .npmrc 正常进包（守卫别误伤真配置）', async () => {
+test('★ .npmrc 一律不进包（机器本地路径 + 可能藏令牌），并如实记录原因', async () => {
   await withFixture(async (fx) => {
     await writeFile(join(fx.roots.dshHome, 'profiles', fx.roots.profile, '.npmrc'), 'store-dir=D:\\pnpm-store\n', 'utf8');
     const r = await scan(fx.roots);
-    assert.ok(r.modules.plugins.entries.map((e) => e.relPath).includes('.npmrc'));
-    assert.deepEqual(r.credentials, []);
+    assert.ok(!r.modules.plugins.entries.map((e) => e.relPath).includes('.npmrc'), '.npmrc 不该进计划');
+    const hit = r.credentials.find((c) => c.relPath === '.npmrc');
+    assert.ok(hit !== undefined, '被剔除的文件必须出现在 credentials 里');
+    assert.equal(hit.moduleId, 'plugins');
+    assert.match(hit.reason, /凭据/);
   });
 });
 

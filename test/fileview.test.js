@@ -137,7 +137,7 @@ test('describeModuleFile：目录不能当文件读', async () => {
   });
 });
 
-test('★ describeModuleFile：.npmrc 里的认证令牌被内容闸拦下，片段打码', async () => {
+test('★ describeModuleFile：.npmrc 一律不可查看（文件名闸），令牌绝不外泄', async () => {
   await withFixture(async (fx) => {
     await writeFile(
       join(fx.roots.dshHome, 'profiles', 'desktop', '.npmrc'),
@@ -145,18 +145,21 @@ test('★ describeModuleFile：.npmrc 里的认证令牌被内容闸拦下，片
       'utf8',
     );
     const v = await describeModuleFile(fx.roots, { moduleId: 'plugins', relPath: '.npmrc' });
-    assert.equal(v.viewable, false, '带 _authToken 的 .npmrc 必须被内容闸拦下');
+    assert.equal(v.viewable, false, '.npmrc 必须被拦下');
     assert.ok(v.guard !== null);
+    assert.equal(v.guard.id, '文件名闸');
     assert.ok(!String(v.guard.excerpt).includes('AbCdEfGhIjKlMnOpQrStUvWx'), '片段必须是打码的');
+    assert.ok(!String(v.reason).includes('AbCdEfGhIjKlMnOpQrStUvWx'), '原因里也不许复述令牌');
     assert.equal(v.text, null, '被拦下时不许回内容');
   });
 });
 
-test('describeModuleFile：不带令牌的 .npmrc 正常显示（守卫别误伤）', async () => {
+test('describeModuleFile：不带令牌的 .npmrc 同样不可查看（机器本地路径，跨机搬运会坏事）', async () => {
   await withFixture(async (fx) => {
     const v = await describeModuleFile(fx.roots, { moduleId: 'plugins', relPath: '.npmrc' });
-    assert.equal(v.viewable, true);
-    assert.match(v.text, /registry\.npmjs\.org/);
+    assert.equal(v.viewable, false, '夹具里那份 .npmrc 只有 registry=…，仍然一律不看');
+    assert.equal(v.guard.id, '文件名闸');
+    assert.equal(v.text, null);
   });
 });
 

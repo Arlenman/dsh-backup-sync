@@ -36,6 +36,12 @@ test('文件名闸：凭据类文件名一律拒绝', () => {
     'id_ed25519',
     '.env',
     'secrets.yaml',
+    // 包管理器配置：既写机器本地绝对路径（store-dir/prefix/cache），又常藏 `_authToken`。
+    // 真机实测（2026-10-14，WSL 换机导入）：Windows 那台的 .npmrc 随包进了 Linux 那台
+    // 的 profile，那个 profile 的 pnpm 立刻 ERR_PNPM_UNEXPECTED_STORE，插件都装不上。
+    '.npmrc',
+    '.yarnrc',
+    '.yarnrc.yml',
     // 大小写不敏感
     '.CREDENTIALS.YAML',
     'Id_Rsa',
@@ -61,7 +67,6 @@ test('文件名闸：正常文件不得误拦', () => {
     'cordis.patch.yml',
     'package.json',
     'pnpm-lock.yaml',
-    '.npmrc', // 只含 store-dir，名字不在黑名单里
     '2026-10-13.todo.md',
     'state.json',
     'README.md',

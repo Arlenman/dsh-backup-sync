@@ -6,10 +6,15 @@
  * 「本地已删除 → 保持删除」，界面还显示成功 —— 静默失效，比报错更糟。
  */
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 /**
  * 期望值必须过一遍 `resolve`。
@@ -21,6 +26,7 @@ import { test } from 'node:test';
 const abs = (...parts) => resolve(...parts);
 
 import { ROUTE_PREFIX, buildRoutes } from '../lib/routes.js';
+import { resolveTar } from '../lib/archive.js';
 import {
   applyImport,
   baselinePathOf,
@@ -252,6 +258,77 @@ test('★ 换机首次导入：基准必须留空，否则新机器一个文件�
       } finally {
         await fresh.cleanup();
       }
+    });
+  });
+});
+
+test('★ 归档里带着凭据类文件时只报不写（老版本打的包、别人给的包）', async () => {
+  // 真机教训（2026-10-14，WSL 换机导入实测）：Windows 那台的
+  // `profiles/<profile>/.npmrc` 里写着 `store-dir=C:\Users\…\pnpm\store\v11`，
+  // 随包导入到 Linux 那台之后，那个 profile 的 pnpm 直接
+  // `ERR_PNPM_UNEXPECTED_STORE` —— 连插件都装不上了。
+  // 扫描侧（guard）已经不会把它打进**新**包；这里钉住导入侧的第二道闸：
+  // 老版本打的包、别人给的包里带着它时，只报「跳过」，绝不落盘。
+  await withFixture(async (fx) => {
+    await withTempDir('.tmp-creds-', async (dir) => {
+      const body = 'store-dir=C:\\Users\\someone\\AppData\\Local\\pnpm\\store\\v11\n';
+      const sha = createHash('sha256').update(body, 'utf8').digest('hex');
+      const staging = join(dir, 'staging');
+      await mkdir(join(staging, 'dsh', 'profiles', fx.roots.profile), { recursive: true });
+      await writeFile(join(staging, 'dsh', 'profiles', fx.roots.profile, '.npmrc'), body);
+      await writeFile(
+        join(staging, 'manifest.json'),
+        JSON.stringify({
+          format: 'dsh-backup-sync',
+          version: 1,
+          createdAt: new Date(0).toISOString(),
+          createdAtLocal: '2026-10-14 17:00:00',
+          machine: 'old-machine',
+          profile: fx.roots.profile,
+          modules: ['plugins'],
+          counts: {},
+          totals: { files: 1, bytes: Buffer.byteLength(body) },
+          roots: { dsh: 'dsh', agents: 'agents' },
+          baselineIncluded: false,
+          files: [
+            {
+              key: `plugins:profiles/${fx.roots.profile}/.npmrc`,
+              path: `dsh/profiles/${fx.roots.profile}/.npmrc`,
+              moduleId: 'plugins',
+              size: Buffer.byteLength(body),
+              mtimeMs: 0,
+              sha256: sha,
+            },
+          ],
+          blocked: [],
+          tool: { name: 'dsh-backup-sync', version: '0.0.9' },
+        }),
+      );
+      const archivePath = join(dir, 'hand-made.tar.gz');
+      await execFileAsync(await resolveTar(), ['-czf', archivePath, '-C', staging, '.']);
+
+      const preview = await previewImport(fx.roots, { archivePath });
+      assert.equal(preview.blocked.length, 1, '归档里的凭据类文件必须被点名');
+      assert.equal(preview.blocked[0].relPath, `profiles/${fx.roots.profile}/.npmrc`);
+      assert.match(preview.blocked[0].reason, /凭据/);
+      const act = preview.actions.find((a) => a.relPath === `profiles/${fx.roots.profile}/.npmrc`);
+      assert.equal(act.action, 'skip', '不能判成导入');
+      assert.match(act.reason, /凭据守卫拦截/);
+      assert.equal(preview.counts.import, 0, '一个文件都不该被判成导入');
+      assert.equal(preview.counts.skip, 1);
+      assert.equal(preview.canApply, false, '没东西可写就不该让用户点执行');
+
+      const applied = await applyImport(fx.roots, { archivePath });
+      assert.equal(applied.ok, true);
+      assert.equal(applied.counts.import, 0);
+      assert.equal(applied.counts.failed, 0);
+      assert.equal(applied.blocked.length, 1);
+      // 夹具的 profile 里本来就有一个 `.npmrc`（`registry=…`）—— 注意它对扫描是
+      // **不可见的**（扫描侧也被文件名闸拦下），所以归档里那份会被判成「归档新增」，
+      // 没有导入侧的这道闸就会直接覆盖本机同名文件。这里钉住内容一字未动。
+      const onDisk = await readFile(join(fx.roots.dshHome, 'profiles', fx.roots.profile, '.npmrc'), 'utf8');
+      assert.equal(onDisk, 'registry=https://registry.npmjs.org/\n', '★ 归档里的凭据类文件绝不能覆盖本机同名文件');
+      assert.equal(onDisk.includes('store-dir'), false, '归档里那行绝不该出现在本机');
     });
   });
 });
@@ -539,9 +616,15 @@ test('★ collectState 回传被凭据守卫拦下的文件（界面要显著提
     await writeFile(join(memDir, 'leak.md'), 'token = ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij\n', 'utf8');
 
     const state = await collectState(fx.roots);
-    assert.equal(state.scan.credentials.length, 1, '被拦的文件要出现在 scan.credentials 里');
-    assert.equal(state.scan.credentials[0].relPath, 'leak.md');
-    assert.match(state.scan.credentials[0].reason, /内容命中/);
+    // 夹具的 profile 里还有一个 `.npmrc`（机器本地路径，且可能藏 `_authToken`），
+    // 它也会被文件名闸拦下 —— 所以这里不钉总数，只钉「该拦的都在、理由都在」。
+    const leak = state.scan.credentials.find((c) => c.relPath === 'leak.md');
+    assert.ok(leak !== undefined, '被拦的文件要出现在 scan.credentials 里');
+    assert.match(leak.reason, /内容命中/);
+    assert.ok(
+      state.scan.credentials.every((c) => typeof c.reason === 'string' && c.reason.length > 0),
+      '每个被拦的文件都要给出理由，绝不静默跳过',
+    );
     const names = state.scan.modules.find((m) => m.id === 'memory').entries.map((e) => e.relPath);
     assert.ok(!names.includes('leak.md'), '被拦的文件不能出现在清单里');
   });

@@ -1,6 +1,6 @@
 # dsh-backup-sync
 
-> 给 [DeepSeek Harness](https://github.com/deepseek-ai) 的**备份 / 恢复 / 换机同步**插件：
+> 给 **DeepSeek Harness** 的**备份 / 恢复 / 换机同步**插件：
 > 把技能、插件、配置、记忆、待办打成一个 `tar.gz`，换台电脑**按模块增量导入**，
 > 靠一份基线库做三方合并 —— 不覆盖你在这台机器上新改的东西。
 
@@ -48,7 +48,7 @@ DSH 的「资产」散落在**两个地方**：
 
 ## 和 dsh-backup 有什么不同
 
-[`@xiaoyuyu6420/dsh-backup`](https://www.npmjs.com/package/@xiaoyuyu6420/dsh-backup) 是一个成熟的全量备份插件（本插件作者也在用），但它的 `skills` 类型指向 `~/.dsh/skills`，而真实技能库在 `~/.agents/skills` —— **它一个技能都备不到**。
+[`@xiaoyuyu6420/dsh-backup`](https://www.npmjs.com/package/@xiaoyuyu6420/dsh-backup) 是一个成熟的全量备份插件（本插件作者也在用），但它的 `skills` 类型找的是 `~/.dsh/skills`；技能库实际住在 `~/.agents/skills`（`~/.dsh` 之外），所以在技能装在标准位置的机器上，**它备不到技能**。
 
 两者的定位：
 
@@ -65,20 +65,25 @@ DSH 的「资产」散落在**两个地方**：
 ## 安装
 
 ```bash
-# npm 源
-dsh plugin --profile web add dsh-backup-sync
+# 从 GitHub 装（推荐锁 tag，可复现）
+dsh plugin --profile web add github:Arlenman/dsh-backup-sync#v0.1.0
 
-# 或直接从 GitHub 装（推荐锁定 commit）
+# 跟 main 分支走
 dsh plugin --profile web add github:Arlenman/dsh-backup-sync
+
+# 或直接用发行版里的 tar.gz
+dsh plugin --profile web add https://github.com/Arlenman/dsh-backup-sync/releases/download/v0.1.0/dsh-backup-sync-0.1.0.tgz
 ```
 
-桌面版（Electron）在 **设置 → 插件** 里填 `dsh-backup-sync` 或
-`github:Arlenman/dsh-backup-sync` 安装。
+桌面版（Electron）在 **设置 → 插件** 里粘贴上面任意一条即可。
+
+> **暂未发布到 npm**，所以 `dsh plugin --profile web add dsh-backup-sync`
+> 这个写法现在装不到东西 —— 请用上面的 GitHub 写法。
 
 > **注意**：插件的宿主半边（HTTP 路由）**不热重载**，装完要重启一次 DSH；
 > 界面半边刷新页面即可生效。
 
-要求：DSH `0.2.0-rc.2`，Node.js ≥ 22。零运行时依赖（只用 Node 内置模块 + 平台提供的 `react`）。
+要求：DSH `0.2.0-rc.2`，Node.js ≥ 22。零 npm 运行时依赖（只用 Node 内置模块 + 平台提供的 `react`；打包那一步调用系统自带的 `tar`）。
 
 ## 界面
 
@@ -225,7 +230,8 @@ lib/archive.js    打包 / 解包 / manifest / sha256 校验
 lib/diff.js       三方合并与冲突判定
 lib/apply.js      应用导入计划（带快照回滚）
 lib/guard.js      凭据黑名单（永不进包）
-lib/schedule.js   定时器
+lib/schedule.js   定时配置归一化与描述（纯函数）
+lib/scheduler.js  宿主进程内定时器（心跳、到点跑一次、轮换旧包）
 lib/routes.js     12 条 HTTP 路由
 docs/notes/       逆向内核得到的插件契约（模块加载器、settings 槽位）
 docs/plans/       设计文档与实施计划（含逐条决策理由）
@@ -251,7 +257,7 @@ test/             node:test 单测（含跨平台路径断言）
 
 ## 已知限制
 
-- 归档格式为 `tar.gz`（Node 内置 `zlib`），**不支持加密**。要加密请用同步目录那一侧的工具。
+- 归档格式为 `tar.gz`（打包调用系统自带的 `tar`），**不支持加密**。要加密请用同步目录那一侧的工具。
 - 导入的合并粒度里，配置文件是「整文件」级别：两边都改了同一个配置文件就会判冲突，
   不会做字段级合并（除了插件清单的 JSON）。
 - 定时器跑在宿主进程里，DSH 退出即停（这是有意的，见上）。
@@ -266,10 +272,10 @@ test/             node:test 单测（含跨平台路径断言）
 - **Three-way merge import**: a local baseline records the hashes of the last backup, so importing
   on another machine never silently overwrites changes made there. Conflicts show a per-file diff.
 - **Credentials never enter an archive** (deny-list of credential filenames/suffixes).
-- **Zero runtime dependencies**, `tar.gz` + sha256 sidecar, settings entry under **Settings → 备份同步**.
+- **Zero npm runtime dependencies** (system `tar` does the packing), `tar.gz` + sha256 sidecar, settings entry under **Settings → 备份同步**.
 
 ```bash
-dsh plugin --profile web add dsh-backup-sync
+dsh plugin --profile web add github:Arlenman/dsh-backup-sync#v0.1.0
 ```
 
 Requires DSH `0.2.0-rc.2` and Node.js ≥ 22. MIT licensed.

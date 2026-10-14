@@ -744,6 +744,26 @@ test('shortHash 只截前 12 位，空值给破折号', () => {
   assert.equal(I.shortHash(undefined), '—');
 });
 
+test('★ joinHint 按 Host 的实际分隔符拼路径提示（Windows 反斜杠 / Linux 正斜杠）', () => {
+  // 真实教训：同一个 client.js 同时发给 Windows 与 Linux 的 Host。
+  // 原先占位符硬编码 `${outDir}\\dsh-sync-…`，在 WSL 那台机器上渲染成
+  // `/home/allen/dsh-backups-sync\dsh-sync-…` —— 混合分隔符，用户照着粘贴必失败。
+  const I = internals();
+  // Windows 风格目录 → 反斜杠
+  assert.equal(I.joinHint('D:\\dsh-backups-sync', 'a.tar.gz'), 'D:\\dsh-backups-sync\\a.tar.gz');
+  // Linux 风格目录 → 正斜杠
+  assert.equal(I.joinHint('/home/allen/dsh-backups-sync', 'a.tar.gz'), '/home/allen/dsh-backups-sync/a.tar.gz');
+  // 结尾多余的分隔符先剥掉再拼，避免出现 `//` 或 `\\`
+  assert.equal(I.joinHint('/home/allen/out/', 'a.tar.gz'), '/home/allen/out/a.tar.gz');
+  assert.equal(I.joinHint('D:\\out\\', 'a.tar.gz'), 'D:\\out\\a.tar.gz');
+  // 有目录但两种风格都像（UNC `\\wsl$\\…`）→ 按反斜杠
+  assert.equal(I.joinHint('\\\\wsl$\\Ubuntu\\home', 'a.tar.gz'), '\\\\wsl$\\Ubuntu\\home\\a.tar.gz');
+  // Host 还没回答时不能拼出一个假的根路径，只给裸文件名
+  assert.equal(I.joinHint(undefined, 'a.tar.gz'), 'a.tar.gz');
+  assert.equal(I.joinHint('', 'a.tar.gz'), 'a.tar.gz');
+  assert.equal(I.joinHint('   ', 'a.tar.gz'), 'a.tar.gz');
+});
+
 test('★ 注入的面板 CSS 花括号必须配平（少一个 } 会让其后所有规则静默失效）', () => {
   // 真实教训：dsh-memory-evolve 的 styles.css 在 .mt-pager-info 后多了一个孤立的 }，
   // 导致该文件 113 个选择器全部失效、整个面板「变丑」，而构建与运行都不报任何错。

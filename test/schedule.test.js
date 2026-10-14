@@ -70,10 +70,24 @@ test('normalizeSchedule：at 补零，keep 上限 200', () => {
   assert.equal(normalizeSchedule({ keep: '12' }).keep, 12);
 });
 
-test('normalizeSchedule：moduleIds 去重、剔除未知模块、空数组归一成 null', () => {
+test('normalizeSchedule：moduleIds 去重、剔除未知模块、空数组保持空', () => {
   assert.deepEqual(normalizeSchedule({ moduleIds: ['skills', 'skills', 'nope'] }).moduleIds, ['skills']);
-  assert.equal(normalizeSchedule({ moduleIds: [] }).moduleIds, null);
+  assert.deepEqual(normalizeSchedule({ moduleIds: [] }).moduleIds, [], '明确什么都没选就是空，不该变成默认全勾');
   assert.equal(normalizeSchedule({ moduleIds: 'skills' }).moduleIds, null);
+  assert.equal(normalizeSchedule({ moduleIds: ['nope', 'zzz'] }).moduleIds, null, '全是垃圾 id 当成没配');
+});
+
+test('★ normalizeSchedule 必须幂等 —— saveSettings 会再归一一次', () => {
+  for (const input of [[], ['nope'], ['sessions'], ['skills', 'sessions'], ['skills'], null, 'x']) {
+    const once = normalizeSchedule({ moduleIds: input }).moduleIds;
+    const twice = normalizeSchedule({ moduleIds: once }).moduleIds;
+    assert.deepEqual(twice, once, `moduleIds=${JSON.stringify(input)} 归一两次结果不一致`);
+  }
+});
+
+test('★ normalizeSchedule：对话硬闸在写入时就生效，存下来的清单里没有 sessions', () => {
+  assert.deepEqual(normalizeSchedule({ moduleIds: ['skills', 'sessions', 'memory'] }).moduleIds, ['skills', 'memory']);
+  assert.deepEqual(normalizeSchedule({ moduleIds: ['sessions'] }).moduleIds, []);
 });
 
 test('sanitizeScheduledModules：对话模块永远进不了定时备份', () => {

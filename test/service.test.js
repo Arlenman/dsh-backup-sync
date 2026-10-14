@@ -431,7 +431,22 @@ test('syncCopy：备份目录空的时候要说清楚，而不是复制个空', 
 test('设置：默认值、落盘、坏文件回默认值', async () => {
   await withFixture(async (fx) => {
     const initial = await loadSettings(fx.roots);
-    assert.deepEqual(initial, { version: 1, outDir: null, syncDir: null, allowDelete: false, includeBaseline: true });
+    assert.deepEqual(initial, {
+      version: 1,
+      outDir: null,
+      syncDir: null,
+      allowDelete: false,
+      includeBaseline: true,
+      schedule: {
+        enabled: false,
+        mode: 'daily',
+        at: '03:00',
+        hours: 24,
+        keep: 7,
+        moduleIds: null,
+        includeBaseline: true,
+      },
+    });
 
     const saved = await saveSettings(fx.roots, { outDir: 'D:\\x', syncDir: 'D:\\y' });
     assert.equal(saved.outDir, 'D:\\x');

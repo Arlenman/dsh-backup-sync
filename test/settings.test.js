@@ -163,3 +163,80 @@ test('effective：请求里的值优先，空串视为没传', () => {
 test('settingsPathOf 落在 <dshHome>/backup-sync/settings.json', () => {
   assert.equal(settingsPathOf({ dshHome: 'C:\\x\\.dsh' }), join('C:\\x\\.dsh', 'backup-sync', 'settings.json'));
 });
+
+// ───────────────────────── 定时备份字段 ─────────────────────────
+
+test('★ 老设置文件没有 schedule 字段时，读出默认调度且默认是关的', async () => {
+  const { dir, roots } = await tmpRoots();
+  try {
+    // 这就是本机升级前的样子：只有五个键，没有 schedule
+    await writeRawSettings(
+      roots,
+      JSON.stringify({ version: 1, outDir: 'D:\\old', syncDir: null, allowDelete: false, includeBaseline: true }),
+    );
+    const s = await loadSettings(roots);
+    assert.equal(s.outDir, 'D:\\old', '加字段不该影响老字段');
+    assert.equal(s.schedule.enabled, false, '升级不该替用户把定时备份打开');
+    assert.equal(s.schedule.mode, 'daily');
+    assert.equal(s.schedule.at, '03:00');
+    assert.equal(s.corrupted, undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('手改坏的 schedule 被归一，而不是让定时器拿到脏数据', async () => {
+  const { dir, roots } = await tmpRoots();
+  try {
+    await writeRawSettings(
+      roots,
+      JSON.stringify({ version: 1, schedule: { enabled: 'yes', mode: 'hourly', at: '99:99', hours: 0, keep: -3 } }),
+    );
+    const s = await loadSettings(roots);
+    assert.equal(s.schedule.enabled, false, "enabled 只认真正的 true");
+    assert.equal(s.schedule.mode, 'daily');
+    assert.equal(s.schedule.at, '03:00');
+    assert.equal(s.schedule.hours, 1, 'hours 下限 1');
+    assert.equal(s.schedule.keep, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('saveSettings 传一半 schedule 时，另一半保留而不是被抹成 undefined', async () => {
+  const { dir, roots } = await tmpRoots();
+  try {
+    await saveSettings(roots, { schedule: { enabled: true, mode: 'interval', hours: 6, keep: 3 } });
+    let s = await loadSettings(roots);
+    assert.equal(s.schedule.enabled, true);
+    assert.equal(s.schedule.hours, 6);
+    assert.equal(s.schedule.keep, 3);
+    assert.equal(s.schedule.at, '03:00', '没传的字段要保留默认，不能变 undefined');
+
+    // 再改一次开关，其余不能被重置
+    await saveSettings(roots, { schedule: { ...s.schedule, enabled: false } });
+    s = await loadSettings(roots);
+    assert.equal(s.schedule.enabled, false);
+    assert.equal(s.schedule.hours, 6, '关掉开关不该把频率一起丢了');
+    assert.equal(s.schedule.mode, 'interval');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('settings 里存了 schedule 也不会污染别的键（存读一致）', async () => {
+  const { dir, roots } = await tmpRoots();
+  try {
+    const saved = await saveSettings(roots, {
+      outDir: 'D:\\b',
+      schedule: { enabled: true, mode: 'daily', at: '23:30', keep: 5, moduleIds: ['skills', 'config'] },
+    });
+    assert.deepEqual(saved.schedule.moduleIds, ['skills', 'config']);
+    const loaded = await loadSettings(roots);
+    assert.equal(loaded.outDir, 'D:\\b');
+    assert.equal(loaded.schedule.at, '23:30');
+    assert.deepEqual(loaded.schedule.moduleIds, ['skills', 'config']);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

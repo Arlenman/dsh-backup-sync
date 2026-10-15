@@ -549,6 +549,18 @@ test('设置：默认值、落盘、坏文件回默认值', async () => {
         moduleIds: null,
         includeBaseline: true,
       },
+      // 云端默认全关、地址留空 —— 云是外部依赖，不能替用户默认打开
+      cloud: {
+        kind: 'webdav',
+        enabled: false,
+        url: null,
+        username: null,
+        remoteDir: 'dsh-backup',
+        insecureTLS: false,
+        autoUpload: false,
+        lastUpload: null,
+        lastCheck: null,
+      },
     });
 
     const saved = await saveSettings(fx.roots, { outDir: 'D:\\x', syncDir: 'D:\\y' });

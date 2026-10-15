@@ -2022,7 +2022,7 @@ test('导入结果：有失败项时改成醒目提示，并把每条错误列�
 
 // ───────────────────────────────────────── 同步页签
 
-test('同步页签：说清这是「复制到文件夹」而不是真的云同步', () => {
+test('同步页签：说清这是「复制到文件夹」，WebDAV 也在这一屏', () => {
   const ui = { ...initialUi(), loading: false, state: sampleState(), tab: 'sync' };
   const tree = renderFull(ui);
   const text = textOf(tree);
@@ -2030,7 +2030,12 @@ test('同步页签：说清这是「复制到文件夹」而不是真的云同�
   assert.ok(text.includes('最小的同步方式'));
   assert.ok(text.includes('U 盘、OneDrive、坚果云'));
   assert.ok(text.includes('.sha256 与 .meta.json'), '要说清边车也一起复制');
-  assert.ok(text.includes('二期'), '要说明 git / WebDAV 还没做');
+  assert.ok(!text.includes('二期'), 'WebDAV 已经做完了，不能再写「二期的事」');
+  assert.equal(
+    findAll(tree, (n) => n.props?.['data-dbs-cloud'] === '1').length,
+    1,
+    '同步页签里要有云端（WebDAV）卡片',
+  );
 
   // 没填目录时两个按钮都禁用
   for (const label of ['推送最新备份过去', '列出文件夹里的包']) {
@@ -2073,6 +2078,315 @@ test('同步页签：文件夹不存在时明确报出来，而不是假装列�
     syncListing: { ok: true, target: 'Z:\\nope', exists: false, archives: [] },
   };
   assert.ok(textOf(renderFull(ui)).includes('文件夹不存在'));
+});
+
+// ───────────────────────────────────────── 云端（WebDAV）
+
+/** 宿主 `/cloud/state` 里那份 `cloud` 视图（密码只以 hasPassword 出现）。 */
+function sampleCloud(over = {}) {
+  return {
+    kind: 'webdav',
+    enabled: false,
+    url: 'http://192.168.3.9:5005/dav/',
+    username: 'dsh',
+    remoteDir: 'dsh-backup',
+    insecureTLS: false,
+    autoUpload: false,
+    hasPassword: true,
+    credentialsCorrupted: false,
+    ready: true,
+    lastUpload: null,
+    lastCheck: { at: '2026-10-15 21:03:11', ok: true },
+    settingsPath: 'C:\\Users\\x\\.dsh\\backup-sync\\settings.json',
+    credentialsPath: 'C:\\Users\\x\\.dsh\\backup-sync\\cloud-credentials.json',
+    remoteUrl: 'http://192.168.3.9:5005/dav/dsh-backup',
+    ...over,
+  };
+}
+
+/** 远端一份包的列表行。 */
+function sampleRemoteRow(over = {}) {
+  return {
+    name: 'dsh-sync-20261015-210000.tar.gz',
+    bytes: 181_900,
+    bytesHuman: '177.6 KB',
+    mtimeMs: 1_762_000_000_000,
+    mtimeLocal: '2026-10-15 21:00:04',
+    isOwn: true,
+    localExists: false,
+    localBytes: null,
+    localSha256: null,
+    remoteNewer: null,
+    ...over,
+  };
+}
+
+test('云端：七个控件与三个按钮都在，密码框类型必须是 password', () => {
+  const ui = { ...initialUi(), loading: false, state: sampleState(), tab: 'sync', cloud: sampleCloud() };
+  const tree = renderFull(ui);
+
+  for (const id of [
+    'dbs-cloud-enabled',
+    'dbs-cloud-url',
+    'dbs-cloud-user',
+    'dbs-cloud-pass',
+    'dbs-cloud-dir',
+    'dbs-cloud-insecure',
+    'dbs-cloud-autoupload',
+  ]) {
+    assert.equal(findAll(tree, (n) => n.props?.id === id).length, 1, `缺少控件 ${id}`);
+  }
+  assert.equal(findAll(tree, (n) => n.props?.id === 'dbs-cloud-pass')[0].props.type, 'password');
+
+  for (const id of ['dbs-cloud-save', 'dbs-cloud-upload', 'dbs-cloud-refresh']) {
+    const found = findAll(tree, (n) => n.type === 'button' && n.props?.id === id);
+    assert.equal(found.length, 1, `缺少按钮 ${id}`);
+    assert.equal(found[0].props.disabled, false);
+  }
+
+  // 三个开关的默认值：都必须是关的 —— 自动上传尤其不能默认打开。
+  for (const id of ['dbs-cloud-enabled', 'dbs-cloud-insecure', 'dbs-cloud-autoupload']) {
+    assert.equal(findAll(tree, (n) => n.props?.id === id)[0].props.checked, false, `${id} 应默认关闭`);
+  }
+});
+
+test('云端：地址与账号回显自宿主，密码框永远不显示已存的密码', () => {
+  const tree = renderFull({
+    ...initialUi(),
+    loading: false,
+    state: sampleState(),
+    tab: 'sync',
+    cloud: sampleCloud(),
+  });
+
+  assert.equal(findAll(tree, (n) => n.props?.id === 'dbs-cloud-url')[0].props.value, 'http://192.168.3.9:5005/dav/');
+  assert.equal(findAll(tree, (n) => n.props?.id === 'dbs-cloud-user')[0].props.value, 'dsh');
+  assert.equal(findAll(tree, (n) => n.props?.id === 'dbs-cloud-dir')[0].props.value, 'dsh-backup');
+
+  const pass = findAll(tree, (n) => n.props?.id === 'dbs-cloud-pass')[0];
+  assert.equal(pass.props.value, '', '密码框内容必须始终为空');
+  assert.equal(pass.props.placeholder, '已保存，留空则不变');
+  assert.ok(!textOf(tree).includes('secret'), '界面上不该出现任何密码字面量');
+});
+
+test('云端：状态文案把「缺地址 / 缺密码 / 没启用 / 已启用」分开说', () => {
+  const { cloudStatusText } = internals();
+  assert.match(cloudStatusText(null), /正在读取/);
+  assert.equal(cloudStatusText(sampleCloud({ url: null, ready: false })), '还没填云端地址');
+  assert.equal(cloudStatusText(sampleCloud({ hasPassword: false, ready: false })), '地址有了，还缺密码');
+  assert.equal(cloudStatusText(sampleCloud()), '已配置（未启用）：dsh-backup');
+  assert.equal(cloudStatusText(sampleCloud({ enabled: true })), '已启用：dsh-backup');
+  assert.match(cloudStatusText(sampleCloud({ credentialsCorrupted: true })), /凭据文件读不出来/);
+});
+
+test('云端：表单草稿只在用户改过时接管，没改过就跟着宿主走', () => {
+  const { cloudFormOf } = internals();
+
+  // 没草稿：由宿主实况派生，密码恒为空串（= 这次不改密码）。
+  const derived = cloudFormOf({ cloud: sampleCloud() });
+  assert.equal(derived.url, 'http://192.168.3.9:5005/dav/');
+  assert.equal(derived.username, 'dsh');
+  assert.equal(derived.remoteDir, 'dsh-backup');
+  assert.equal(derived.password, '');
+  assert.equal(derived.enabled, false);
+  assert.equal(derived.autoUpload, false);
+
+  // 宿主什么都没答（首屏）：不能崩，也不能渲染出 undefined。
+  const empty = cloudFormOf({ cloud: null });
+  assert.equal(empty.url, '');
+  assert.equal(empty.remoteDir, '');
+  assert.equal(empty.insecureTLS, false);
+
+  // 有草稿：草稿说了算，宿主那边再变也不冲掉用户正在填的内容。
+  const draft = cloudFormOf({ cloud: sampleCloud({ url: 'http://old/dav/' }), cloudForm: { ...empty, url: 'http://new/dav/' } });
+  assert.equal(draft.url, 'http://new/dav/');
+});
+
+test('云端：保存请求里密码只在填了的时候才带上（留空 = 不改密码）', () => {
+  const { cloudSaveBody, cloudFormOf } = internals();
+  const base = cloudFormOf({ cloud: sampleCloud() });
+
+  const blank = cloudSaveBody(base);
+  assert.equal(blank.save, true, '必须带上 save:true —— 测的就是要存下来的那份配置');
+  assert.ok(!('password' in blank), '留空不能提交 password（否则会把已存的密码抹掉）');
+  assert.equal(blank.url, 'http://192.168.3.9:5005/dav/');
+  assert.equal(blank.remoteDir, 'dsh-backup');
+
+  const typed = cloudSaveBody({ ...base, password: 'app-pass', url: '  http://192.168.3.9:5005/dav/  ' });
+  assert.equal(typed.password, 'app-pass');
+  assert.equal(typed.url, 'http://192.168.3.9:5005/dav/', '地址两端空白要去掉');
+});
+
+test('云端：连接测试失败要给出 HTTP 状态，且同时落进红条', () => {
+  const { cloudTestOutcome } = internals();
+  const body = { url: 'http://192.168.3.9:5005/dav/', remoteDir: 'dsh-backup' };
+
+  const bad = cloudTestOutcome({ ok: false, status: 401, error: '认证失败（HTTP 401）' }, body);
+  assert.equal(bad.cloudResult.ok, false);
+  assert.equal(bad.cloudResult.status, 401, '401 要能从界面上看到');
+  assert.equal(bad.cloudError, '认证失败（HTTP 401）', '失败必须同时进红条，不能只写一句「连接失败」');
+  assert.equal(bad.cloudResult.title, '云端连接失败');
+
+  const good = cloudTestOutcome({ ok: true, url: body.url, remoteDir: body.remoteDir, created: true }, body);
+  assert.equal(good.cloudResult.created, true);
+  assert.equal(good.cloudError, null);
+
+  // 展开成测试侧的对象再比：bundle 跑在 vm 里，跨 realm 的 deepStrictEqual 会因为
+  // 原型不同而报「same structure but not reference-equal」。
+  assert.deepEqual({ ...cloudTestOutcome(null, body) }, { cloudResult: null, cloudError: null });
+});
+
+test('云端：远端列表每行带包名与下载/删除按钮，状态用徽标说清', () => {
+  const remote = {
+    ok: true,
+    dirMissing: false,
+    files: [
+      sampleRemoteRow(),
+      sampleRemoteRow({ name: 'dsh-sync-20261014-090000.tar.gz', localExists: true, remoteNewer: true }),
+      sampleRemoteRow({ name: 'dsh-sync-20261013-090000.tar.gz', localExists: true, remoteNewer: false }),
+    ],
+  };
+  const tree = renderFull({
+    ...initialUi(),
+    loading: false,
+    state: sampleState(),
+    tab: 'sync',
+    cloud: sampleCloud(),
+    cloudRemote: remote,
+  });
+
+  const rows = findAll(tree, (n) => typeof n.props?.['data-dbs-remote'] === 'string');
+  assert.deepEqual(
+    rows.map((r) => r.props['data-dbs-remote']),
+    remote.files.map((f) => f.name),
+  );
+
+  // 每一行的两个按钮都带着这一行的包名 —— 一屏 N 个「下载」必须能分清是谁。
+  for (const f of remote.files) {
+    const dl = findAll(tree, (n) => n.props?.['data-dbs-download'] === f.name);
+    assert.equal(dl.length, 1, `缺少「下载」按钮：${f.name}`);
+    const rm = findAll(tree, (n) => n.props?.['data-dbs-remove'] === f.name);
+    assert.equal(rm.length, 1, `缺少「删除」按钮：${f.name}`);
+  }
+
+  const text = textOf(tree);
+  assert.ok(text.includes('本地没有'), '远端有、本地没有的包要标出来');
+  assert.ok(text.includes('远端更新'));
+  assert.ok(text.includes('本地已有'));
+  assert.ok(!text.includes('未核对'), '列表阶段不该出现下载校验的措辞');
+});
+
+test('云端：删除要二次确认，确认前一个请求都不发', () => {
+  const called = [];
+  const actions = {
+    cloudRemoveAsk: (name) => called.push(['ask', name]),
+    cloudRemove: (name) => called.push(['remove', name]),
+    cloudRemoveCancel: () => called.push(['cancel']),
+    cloudDownload: (name) => called.push(['download', name]),
+  };
+  const base = {
+    ...initialUi(),
+    loading: false,
+    state: sampleState(),
+    tab: 'sync',
+    cloud: sampleCloud(),
+    cloudRemote: { ok: true, dirMissing: false, files: [sampleRemoteRow()] },
+  };
+
+  // 第一下点「删除」只是问一句，绝不直接删。
+  const tree = renderFull(base, actions);
+  findAll(tree, (n) => n.props?.['data-dbs-remove'] === sampleRemoteRow().name)[0].props.onClick();
+  assert.deepEqual(called, [['ask', sampleRemoteRow().name]]);
+
+  // 确认态：只出现「确认删除 / 取消」，下载按钮先让位。
+  const confirming = renderFull({ ...base, cloudPendingRemove: sampleRemoteRow().name }, actions);
+  assert.equal(findAll(confirming, (n) => n.props?.id === 'dbs-cloud-remove-yes').length, 1);
+  assert.equal(findAll(confirming, (n) => n.props?.id === 'dbs-cloud-remove-no').length, 1);
+  assert.equal(findAll(confirming, (n) => n.props?.['data-dbs-download'] === undefined).length > 0, true);
+  assert.equal(findAll(confirming, (n) => n.props?.['data-dbs-download'] === sampleRemoteRow().name).length, 0);
+
+  findAll(confirming, (n) => n.props?.id === 'dbs-cloud-remove-yes')[0].props.onClick();
+  findAll(confirming, (n) => n.props?.id === 'dbs-cloud-remove-no')[0].props.onClick();
+  assert.deepEqual(called, [['ask', sampleRemoteRow().name], ['remove', sampleRemoteRow().name], ['cancel']]);
+});
+
+test('云端：远端文件夹还没建时说清「第一次上传会建」，而不是假装列表为空', () => {
+  const ui = {
+    ...initialUi(),
+    loading: false,
+    state: sampleState(),
+    tab: 'sync',
+    cloud: sampleCloud(),
+    cloudRemote: { ok: true, dirMissing: true, files: [] },
+  };
+  const text = textOf(renderFull(ui));
+  assert.ok(text.includes('远端还没有这个文件夹'));
+  assert.ok(text.includes('第一次上传时会自动创建'));
+
+  const empty = textOf(renderFull({ ...ui, cloudRemote: { ok: true, dirMissing: false, files: [] } }));
+  assert.ok(empty.includes('远端文件夹里还没有备份包'));
+
+  const failed = textOf(renderFull({ ...ui, cloudRemote: { ok: false, error: '认证失败（HTTP 401）' } }));
+  assert.ok(failed.includes('列不出远端'));
+  assert.ok(failed.includes('401'));
+});
+
+test('云端：卡片上说清「上传最新备份」到底传哪一份', () => {
+  const local = [{ name: 'dsh-sync-20261015-210000.tar.gz', bytesHuman: '177.6 KB', mtimeLocal: '2026-10-15 21:00:04' }];
+  const withLocal = textOf(
+    renderFull({ ...initialUi(), loading: false, state: sampleState(), tab: 'sync', cloud: sampleCloud(), cloudLocal: local }),
+  );
+  assert.ok(withLocal.includes('会传：dsh-sync-20261015-210000.tar.gz'));
+  assert.ok(withLocal.includes('177.6 KB'));
+
+  const none = textOf(
+    renderFull({ ...initialUi(), loading: false, state: sampleState(), tab: 'sync', cloud: sampleCloud(), cloudLocal: [] }),
+  );
+  assert.ok(none.includes('本地备份目录里还没有包'));
+});
+
+test('云端：失败信息（含旧宿主 404）要在卡片里看得见', () => {
+  const tree = renderFull({
+    ...initialUi(),
+    loading: false,
+    state: sampleState(),
+    tab: 'sync',
+    cloud: null,
+    cloudError: '当前运行的宿主里还没有这条接口（HTTP 404）。界面部分已经是最新的，宿主部分要重启一次 DSH 才会生效 —— 关掉 DSH 再打开即可。',
+  });
+  const notices = findAll(tree, (n) => n.props?.['data-tone'] === 'bad' && String(n.props?.className ?? '').includes('dbs-notice'));
+  assert.ok(notices.length >= 1, '云端失败要有红色提示块');
+  assert.ok(textOf(tree).includes('重启一次 DSH'));
+});
+
+test('云端：有改动没保存、以及密码提交后清空，都要看得见', () => {
+  const dirty = renderFull({
+    ...initialUi(),
+    loading: false,
+    state: sampleState(),
+    tab: 'sync',
+    cloud: sampleCloud(),
+    cloudDirty: true,
+  });
+  assert.equal(findAll(dirty, (n) => n.props?.['data-dbs-cloud-dirty'] === '1').length, 1);
+
+  const clean = renderFull({ ...initialUi(), loading: false, state: sampleState(), tab: 'sync', cloud: sampleCloud() });
+  assert.equal(findAll(clean, (n) => n.props?.['data-dbs-cloud-dirty'] === '1').length, 0);
+});
+
+test('云端：上传成功后卡片的「上次上传」跟着更新', () => {
+  const text = textOf(
+    renderFull({
+      ...initialUi(),
+      loading: false,
+      state: sampleState(),
+      tab: 'sync',
+      cloud: sampleCloud({
+        lastUpload: { at: '2026-10-15 21:31:02', name: 'dsh-sync-20261015-210000.tar.gz', bytes: 181_900, remoteDir: 'dsh-backup' },
+      }),
+    }),
+  );
+  assert.ok(text.includes('dsh-sync-20261015-210000.tar.gz · 2026-10-15 21:31:02'));
 });
 
 test('★ 整个面板不出现 undefined / NaN / [object Object]（六种状态全查一遍）', () => {

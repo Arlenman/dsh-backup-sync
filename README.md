@@ -83,10 +83,11 @@ dsh plugin --profile web add https://github.com/Arlenman/dsh-backup-sync/release
 github:Arlenman/dsh-backup-sync#v0.1.0
 ```
 
-这条路已经实测过（2026-10-15，用本机 pnpm 11.7.0 跑真实的 git 源安装）：
-pnpm 把仓库树按 `files` 字段打包后安装，装出来 **22 个文件**
-（`lib/*.js` 18 个 + `package.json` + `cordis.patch.yml` + `README.md` + `LICENSE`），
-与 Release 里那个 `.tgz` **逐个文件、逐字节一致**；解析到的提交是 `289819f`（= tag `v0.1.0`）。
+这条路已经实测过（2026-10-15，拿上面那条 spec 对**真仓库**跑 `pnpm add`，51.5 秒装完）：
+pnpm 拉的是 codeload 从仓库树打的 tarball（锁文件里记的是 `gitHosted: true` + sha512 integrity），
+装出来 **22 个文件**（`lib/*.js` 18 个 + `package.json` + `cordis.patch.yml` + `README.md` + `LICENSE`），
+与 Release 里那个 `.tgz` **逐个文件、逐字节一致**（22/22，sha256 全等）；
+解析到的提交是 `289819f`（= tag `v0.1.0`），装出来的 `lib/index.js` 用 node 直接 import 就能加载。
 仓库里**没有 `prepare` / `prepublish` / `postinstall` 脚本、没有 `dependencies`**，
 `lib/` 是提交进仓库的现成 JS ⇒ **目标机器不需要构建，也不需要装任何依赖**。
 

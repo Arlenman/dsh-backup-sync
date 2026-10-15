@@ -77,6 +77,25 @@ dsh plugin --profile web add https://github.com/Arlenman/dsh-backup-sync/release
 
 桌面版（Electron）在 **设置 → 插件** 里粘贴上面任意一条即可。
 
+**换台电脑（家里另一台）就填这一条**：
+
+```
+github:Arlenman/dsh-backup-sync#v0.1.0
+```
+
+这条路已经实测过（2026-10-15，用本机 pnpm 11.7.0 跑真实的 git 源安装）：
+pnpm 把仓库树按 `files` 字段打包后安装，装出来 **22 个文件**
+（`lib/*.js` 18 个 + `package.json` + `cordis.patch.yml` + `README.md` + `LICENSE`），
+与 Release 里那个 `.tgz` **逐个文件、逐字节一致**；解析到的提交是 `289819f`（= tag `v0.1.0`）。
+仓库里**没有 `prepare` / `prepublish` / `postinstall` 脚本、没有 `dependencies`**，
+`lib/` 是提交进仓库的现成 JS ⇒ **目标机器不需要构建，也不需要装任何依赖**。
+
+两个前提：
+
+- 目标机器要能连上 `github.com`。插件管理器在装 git 依赖前有 **5 秒** github.com 预检，
+  之后 pnpm 拉 `codeload.github.com` 的 tarball（**60 秒** idle 超时）。包本体约 150 KB，慢网也够。
+- 装完**重启一次 DSH**（宿主半边不热重载，见下）。
+
 > **暂未发布到 npm**，所以 `dsh plugin --profile web add dsh-backup-sync`
 > 这个写法现在装不到东西 —— 请用上面的 GitHub 写法。
 
@@ -263,6 +282,9 @@ test/             node:test 单测（含跨平台路径断言）
   不会做字段级合并（除了插件清单的 JSON）。
 - 定时器跑在宿主进程里，DSH 退出即停（这是有意的，见上）。
 - 界面半边是手写的 CJS bundle（本机没有打包器），所以没有 JSX、没有 TS。
+- **`.npmrc` / `.yarnrc` 既不进包、也不导入**（按凭据类文件名拦截，而且里面的 `store-dir`
+  本来就是机器专属路径 —— 实测把它导到另一台机器会让 pnpm 直接 `ERR_PNPM_UNEXPECTED_STORE`）。
+  代价：目标机器若依赖 profile 级 `.npmrc` 里的镜像源 / 代理，导入后要手动补一次。
 
 ## English
 

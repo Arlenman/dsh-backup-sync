@@ -42,6 +42,16 @@ async function harness(over = {}) {
   );
 
   const settings = { outDir: null, syncDir: null, allowDelete: false, includeBaseline: true, schedule };
+  // 云端默认关着 —— 定时自动上传是**附加动作**，默认不开
+  settings.cloud = {
+    kind: 'webdav',
+    enabled: false,
+    autoUpload: false,
+    url: 'http://127.0.0.1:1/dav/',
+    username: 'u',
+    remoteDir: 'dsh-backup',
+    ...(over.cloud ?? {}),
+  };
   const loadSettings = async () => ({ ...settings, schedule });
 
   const runBackup =
@@ -63,7 +73,15 @@ async function harness(over = {}) {
       return [];
     });
 
-  const sched = createScheduler({ roots, loadSettings, runBackup, listArchiveDir, now: () => clock.t, log: () => {} });
+  const sched = createScheduler({
+    roots,
+    loadSettings,
+    runBackup,
+    listArchiveDir,
+    now: () => clock.t,
+    log: () => {},
+    ...(over.uploadArchive ? { uploadArchive: over.uploadArchive } : {}),
+  });
 
   if (over.state !== undefined) await saveScheduleState(roots, over.state);
 
@@ -505,4 +523,117 @@ test('默认状态对象是「什么都没跑过」，不是 undefined', () => {
   assert.equal(DEFAULT_SCHEDULE_STATE.lastRunAt, null);
   assert.equal(DEFAULT_SCHEDULE_STATE.runCount, 0);
   assert.equal(DEFAULT_SCHEDULE_STATE.lastError, null);
+});
+
+// ───────────────────────── 定时备份后自动上传云端 ─────────────────────────
+
+test('定时自动上传：两个开关任一没开都不调用上传', async () => {
+  for (const cloud of [
+    { enabled: false, autoUpload: true },
+    { enabled: true, autoUpload: false },
+  ]) {
+    const uploads = [];
+    const h = await harness({
+      cloud,
+      uploadArchive: async (roots, opts) => {
+        uploads.push(opts);
+        return { ok: true, files: [] };
+      },
+    });
+    try {
+      const r = await h.sched.runNow();
+      assert.equal(r.ran, true, '备份该照跑');
+      assert.equal(uploads.length, 0, `enabled=${cloud.enabled} autoUpload=${cloud.autoUpload} 时不该上传`);
+      const st = await loadScheduleState(h.roots);
+      assert.equal(st.cloudUpload, null);
+      assert.equal(st.cloudError, null);
+    } finally {
+      await h.cleanup();
+    }
+  }
+});
+
+test('★ 定时自动上传：开着就传**刚打好的那一份**，并把结果记进状态', async () => {
+  const uploads = [];
+  const h = await harness({
+    cloud: { enabled: true, autoUpload: true },
+    uploadArchive: async (roots, opts) => {
+      uploads.push({ roots, opts });
+      return {
+        ok: true,
+        files: [{ name: opts.name }, { name: `${opts.name}.sha256` }, { name: `${opts.name}.meta.json` }],
+        remoteDir: 'dsh-backup',
+        remoteUrl: 'http://127.0.0.1:1/dav/dsh-backup/',
+      };
+    },
+  });
+  try {
+    const r = await h.sched.runNow();
+    assert.equal(r.ran, true);
+    assert.equal(uploads.length, 1, '一次备份只上传一次');
+    const made = (await loadScheduleState(h.roots)).lastResult.name;
+    assert.equal(uploads[0].opts.name, made, '要传的就是本次刚生成的那份包，不能是别的最新包');
+    assert.equal(uploads[0].opts.outDir, h.outDir);
+    assert.equal(uploads[0].roots, h.roots);
+
+    assert.equal(r.cloudError, null);
+    const st = await loadScheduleState(h.roots);
+    assert.equal(st.cloudUpload.name, made);
+    assert.equal(st.cloudUpload.files, 3);
+    assert.equal(st.cloudUpload.remoteDir, 'dsh-backup');
+    assert.equal(st.cloudError, null);
+    assert.equal(st.lastError, null);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('★ 自动上传失败：备份仍然算成功，只记 cloudError', async () => {
+  const h = await harness({
+    cloud: { enabled: true, autoUpload: true },
+    uploadArchive: async () => {
+      const err = new Error('远端拒绝（403）：目录只读');
+      err.status = 403;
+      throw err;
+    },
+  });
+  try {
+    const r = await h.sched.runNow();
+    assert.equal(r.ran, true, '「备份成功」这个事实不能被上传失败改写');
+    assert.match(r.cloudError, /403/);
+
+    const st = await loadScheduleState(h.roots);
+    assert.equal(st.lastError, null, '备份本身没有失败');
+    assert.ok(st.lastResult !== null, 'lastResult 必须是这次成功的备份');
+    assert.equal(st.cloudUpload, null);
+    assert.match(st.cloudError, /只读/);
+    // 包确实在本地，用户还能手动重试上传
+    await readFile(join(h.outDir, st.lastResult.name), 'utf8');
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('★ 上传失败留下的 cloudError 不该粘在下一轮成功的结果上', async () => {
+  let fail = true;
+  const h = await harness({
+    cloud: { enabled: true, autoUpload: true },
+    uploadArchive: async (roots, opts) => {
+      if (fail) throw new Error('网络不通');
+      return { ok: true, files: [{ name: opts.name }], remoteDir: 'dsh-backup' };
+    },
+  });
+  try {
+    await h.sched.runNow();
+    assert.match((await loadScheduleState(h.roots)).cloudError, /网络不通/);
+
+    fail = false;
+    h.clock.t += 60_000;
+    await h.sched.runNow();
+    const st = await loadScheduleState(h.roots);
+    assert.equal(st.cloudError, null, '上一轮的失败原因必须在下一轮被清掉');
+    assert.equal(st.cloudUpload.name, st.lastResult.name);
+  } finally {
+    await h.cleanup();
+  }
 });

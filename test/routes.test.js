@@ -9,12 +9,14 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { ROUTE_PREFIX, buildRoutes } from '../lib/routes.js';
 import { loadSettings, settingsPathOf } from '../lib/settings.js';
 import { loadScheduleState, scheduleStatePathOf } from '../lib/scheduler.js';
+import { runBackup } from '../lib/service.js';
+import { startFakeWebdav } from './fake-webdav.js';
 import { withFixture, withTempDir } from './fixture.js';
 
 function finder(fx, opts = {}) {
@@ -331,4 +333,190 @@ test('★ 只读接口不许改任何设置文件', async () => {
     assert.equal(afterText, beforeText, '只读接口不该往 settings.json 写东西');
     assert.deepEqual({ ...after, schedule: { ...after.schedule } }, { ...before, schedule: { ...before.schedule } });
   });
+});
+
+// ───────────────────────── 云端接口
+
+/**
+ * 夹具 + 假 WebDAV + 路由表。
+ *
+ * 假服务器在**进入 try 之前**就启动，所以从启动那一行起所有代码都必须在 try 里 ——
+ * 否则夹具自己抛错会把监听中的 socket 留到测试进程跑完不退出（cloud.test.js 踩过）。
+ */
+async function withCloudRoutes(fn, serverOpts = {}) {
+  return withFixture(async (fx) => {
+    const davRoot = join(fx.root, 'dav-root');
+    await mkdir(davRoot, { recursive: true });
+    const outDir = join(fx.root, 'backups');
+    const srv = await startFakeWebdav({ root: davRoot, username: 'u', password: 'p', ...serverOpts });
+    try {
+      const api = finder(fx);
+      return await fn({ ...fx, srv, davRoot, outDir, ...api });
+    } finally {
+      await srv.stop();
+    }
+  });
+}
+
+test('路由表：八条 /cloud 路径都在，且方法合法不重复', () => {
+  const paths = buildRoutes({ get: () => undefined }).map((r) => r.path);
+  for (const p of [
+    '/cloud/state',
+    '/cloud/config',
+    '/cloud/password',
+    '/cloud/test',
+    '/cloud/upload',
+    '/cloud/list',
+    '/cloud/download',
+    '/cloud/remove',
+  ]) {
+    assert.ok(paths.includes(`${ROUTE_PREFIX}${p}`), `缺路由 ${p}`);
+  }
+});
+
+test('★ /cloud/state：回配置与可上传的本地包，但**永远没有密码**', async () => {
+  await withCloudRoutes(async ({ post, outDir, ...fx }) => {
+    const backup = await runBackup(fx.roots, { moduleIds: ['skills'], outDir });
+    const { body } = await post('/cloud/state', { outDir });
+
+    assert.equal(body.ok, true);
+    assert.equal(body.cloud.kind, 'webdav');
+    assert.equal(body.cloud.enabled, false, '默认关着');
+    assert.equal(body.cloud.ready, false, '没填地址没填密码 → 不该显示成可用');
+    assert.equal(body.cloud.hasPassword, false);
+    const text = JSON.stringify(body);
+    assert.doesNotMatch(text, /password"\s*:\s*"[^"]/, '响应里不能出现任何密码字段');
+    assert.equal('password' in body.cloud, false);
+
+    assert.ok(Array.isArray(body.localArchives));
+    assert.equal(body.localArchives[0].name, backup.archive.name, '本地包列表要能被界面直接拿去当上传候选项');
+  });
+});
+
+test('★ /cloud/config + /cloud/password：配置与密码分两个接口，密码只进不出', async () => {
+  await withCloudRoutes(async ({ post, ...fx }) => {
+    const saved = await post('/cloud/config', {
+      url: fx.srv.url,
+      username: 'u',
+      remoteDir: '/dsh-backup/',
+      enabled: true,
+      autoUpload: true,
+    });
+    assert.equal(saved.body.ok, true);
+    assert.equal(saved.body.cloud.url, fx.srv.url);
+    assert.equal(saved.body.cloud.remoteDir, 'dsh-backup', '首尾斜杠要归一');
+    assert.equal(saved.body.cloud.enabled, true);
+    assert.equal(saved.body.cloud.hasPassword, false, '还没存密码');
+
+    const pw = await post('/cloud/password', { password: 'p' });
+    assert.equal(pw.body.hasPassword, true);
+    assert.equal(JSON.stringify(pw.body).includes('"p"'), false, '回执里不能有密码本身');
+
+    const state = await post('/cloud/state', {});
+    assert.equal(state.body.cloud.ready, true);
+    assert.equal(state.body.cloud.remoteUrl, `${fx.srv.url}dsh-backup/`, '要给出人看的远端位置');
+
+    const cleared = await post('/cloud/password', { clear: true });
+    assert.equal(cleared.body.hasPassword, false);
+
+    // 非法输入要在这一层就被挡下，不能等到上传时才发现
+    const bad = await post('/cloud/config', { remoteDir: '../evil' });
+    assert.equal(bad.body.ok, false);
+    assert.match(bad.body.error, /\.\./);
+    const bad2 = await post('/cloud/config', { url: 'ftp://x/y' });
+    assert.equal(bad2.body.ok, false);
+  });
+});
+
+test('★ /cloud/test：save=true 先存后测；密码错如实回 401', async () => {
+  await withCloudRoutes(async ({ post, srv, ...fx }) => {
+    const good = await post('/cloud/test', {
+      save: true,
+      url: srv.url,
+      username: 'u',
+      password: 'p',
+      remoteDir: 'dsh-backup',
+      enabled: true,
+    });
+    assert.equal(good.body.ok, true);
+    assert.equal(good.body.result.ok, true, JSON.stringify(good.body.result));
+    assert.equal(good.body.result.remoteDir, 'dsh-backup');
+    assert.equal(good.body.cloud.ready, true, 'save=true 要真的落盘');
+    assert.ok((await loadSettings(fx.roots)).cloud.url === srv.url);
+
+    const bad = await post('/cloud/test', { password: 'wrong' });
+    assert.equal(bad.body.ok, true, '接口调用成功，「连不上」是业务答案');
+    assert.equal(bad.body.result.ok, false);
+    assert.equal(bad.body.result.status, 401);
+    assert.match(bad.body.result.error, /认证|密码|401/);
+  });
+});
+
+test('★ /cloud 上传/列表/下载/删除：一条链路走通，且只认自有命名', async () => {
+  await withCloudRoutes(async ({ post, outDir, srv, ...fx }) => {
+    await post('/cloud/config', { url: srv.url, username: 'u', remoteDir: 'dsh-backup', enabled: true });
+    await post('/cloud/password', { password: 'p' });
+
+    const backup = await runBackup(fx.roots, { moduleIds: ['skills'], outDir });
+    const up = await post('/cloud/upload', { outDir });
+    assert.equal(up.body.ok, true, JSON.stringify(up.body));
+    assert.equal(up.body.archive.name, backup.archive.name, '不指定就传最新那一份');
+    assert.equal(up.body.files.length, 3, '包 + .sha256 + .meta.json');
+    assert.equal(up.body.lastUpload.name, backup.archive.name);
+
+    const list = await post('/cloud/list', { outDir });
+    assert.equal(list.body.ok, true);
+    assert.equal(list.body.files.length, 1, '边车不当包列');
+    assert.equal(list.body.files[0].isOwn, true);
+    assert.equal(list.body.files[0].localExists, true);
+
+    // 非自有命名：在碰任何文件之前就该被挡（看服务器有没有收到请求）
+    const beforeRequests = srv.requests.length;
+    for (const name of ['别人的备份.tar.gz', '../evil.tar.gz']) {
+      const d = await post('/cloud/download', { name, outDir });
+      assert.equal(d.body.ok, false, `${name} 不该被允许下载`);
+      assert.match(d.body.error, /不是本插件|只认/);
+      const r = await post('/cloud/remove', { name });
+      assert.equal(r.body.ok, false, `${name} 不该被允许删除`);
+      assert.match(r.body.error, /不是本插件|只认/);
+    }
+    assert.equal(srv.requests.length, beforeRequests, '被拒的请求不该真的发到服务器上');
+
+    const dl = await post('/cloud/download', { name: backup.archive.name, outDir });
+    assert.equal(dl.body.ok, false);
+    assert.match(dl.body.error, /已存在/, '默认不覆盖本地已有的包');
+    const dl2 = await post('/cloud/download', { name: backup.archive.name, outDir, overwrite: true });
+    assert.equal(dl2.body.ok, true, JSON.stringify(dl2.body));
+    assert.equal(dl2.body.sha256, backup.archive.sha256);
+    assert.equal(dl2.body.verified, true);
+
+    const rm = await post('/cloud/remove', { name: backup.archive.name });
+    assert.equal(rm.body.ok, true);
+    assert.equal(rm.body.removed.length, 3);
+    const again = await post('/cloud/remove', { name: backup.archive.name });
+    assert.equal(again.body.ok, true, '重复删除要幂等');
+
+    const noName = await post('/cloud/download', {});
+    assert.equal(noName.body.ok, false);
+    assert.match(noName.body.error, /包名/);
+  });
+});
+
+test('★ /cloud/upload：远端只读时如实回状态码与服务器原文，不留 lastUpload', async () => {
+  await withCloudRoutes(
+    async ({ post, outDir, ...fx }) => {
+      await post('/cloud/config', { url: fx.srv.url, username: 'u', remoteDir: 'dsh-backup', enabled: true });
+      await post('/cloud/password', { password: 'p' });
+      await runBackup(fx.roots, { moduleIds: ['skills'], outDir });
+
+      const up = await post('/cloud/upload', { outDir });
+      assert.equal(up.body.ok, false);
+      assert.equal(up.body.status, 403, '要把服务器给的状态码带回来');
+      assert.match(up.body.error, /403|只读|拒绝/);
+
+      const state = await post('/cloud/state', {});
+      assert.equal(state.body.cloud.lastUpload, null, '失败了不能留下「已上传」的痕迹');
+    },
+    { readonly: true },
+  );
 });

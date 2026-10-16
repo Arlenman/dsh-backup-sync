@@ -95,7 +95,8 @@ try {
   console.log(`  ${JSON.stringify(probe)}`);
   check('probe.ok', probe.ok === true, probe.ok ? `status=${probe.status} dav=${JSON.stringify(probe.dav)}` : `status=${probe.status} err=${probe.error ?? ''}`);
   if (!probe.ok) throw new Error(`probe 失败：${probe.error ?? probe.status}`);
-  check('服务器声明了 DAV 能力头', Boolean(probe.dav), `DAV: ${JSON.stringify(probe.dav)}`);
+  if (probe.dav) check('服务器声明了 DAV 能力头', true, `DAV: ${JSON.stringify(probe.dav)}`);
+  else note('服务器没在 OPTIONS 响应里给 DAV 头（绿联 UGOS 实测未认证时就没有，属常见情况）—— 不作失败判定，后面的 PROPFIND 207 成功即可证明对方确实是 WebDAV');
 
   console.log(`\n=== 2. 列根目录 ===`);
   const root = await client.list('');
@@ -151,7 +152,7 @@ try {
 
   const listed = await client.list(remoteDir);
   const found = listed.find((e) => e.name === name);
-  check('列目录能看到刚上传的包', Boolean(found), found ? `size=${found.size ?? found.contentLength ?? '?'}` : '');
+  check('列目录能看到刚上传的包', Boolean(found), found ? `size=${found.bytes ?? '?'} mtime=${found.mtime ?? '?'}` : '');
   const head = await client.stat(remoteRel).catch(() => null);
   check('stat 能取到它', Boolean(head), head ? JSON.stringify(head).slice(0, 160) : '');
 
@@ -181,11 +182,54 @@ try {
   }
   check('重复删除是幂等的（不抛错或 404）', idempotent);
 
-  if (!args.keep && archive !== join(tmpDir, name)) {
+  // 收尾策略（2026-10-16 修正）：这里**默认保留**刚上传的那一份。
+  // 之前写成 `if (!args.keep && archive !== join(tmpDir, name)) await client.remove(...)`，
+  // 方向正好反了 —— 真包（本地备份目录里的那一份）被删，探针包反而留着，
+  // 而且紧接着的断言写死了 true，删掉了也照样报绿。实际后果：这条脚本自己把用户
+  // NAS 上唯一的云端备份删掉了（2026-10-16 实测踩到）。现在的规则：
+  //   真包 → 永远保留（它就是一次真的云端备份，删掉等于毁数据）；
+  //   本地临时生成的探针包 → 默认删掉，加 --keep 才留。
+  const synthetic = archive === join(tmpDir, name);
+  if (synthetic && !args.keep) {
     await client.remove(remoteRel);
-    note('（--keep 未指定但真包保留策略=默认保留，故此处不删）');
+    note('（上传的是本地临时生成的探针包，已删除；要留现场加 --keep）');
+  } else {
+    note(`（${synthetic ? '--keep：探针包保留' : '真包：本次上传即一次真的云端备份，保留'}）`);
   }
-  check('真包已留在远端', true, remoteRel);
+  const kept = await client.stat(remoteRel).catch(() => null);
+  check(synthetic && !args.keep ? '探针包已删除' : '真包已留在远端', synthetic && !args.keep ? kept === null : kept !== null, remoteRel);
+
+  console.log(`\n=== 6. 目录生命周期（回答「删掉最后一份包之后，界面该怎么说」）===`);
+  const probeDirName = `_dbs-e2e-${Date.now()}`;
+  const probeDir = remoteDir ? `${remoteDir}/${probeDirName}` : probeDirName;
+  const mk = await client.ensureDir(probeDir);
+  check('MKCOL 能新建目录', mk.created.length >= 1, `created=${mk.created.join(',')}`);
+  const mkAgain = await client.ensureDir(probeDir);
+  check('重复 ensureDir 不报错（已存在=405 被容忍，不会误判成失败）', mkAgain.created.length === 0, `existed=${mkAgain.existed.join(',')}`);
+  await client.put(`${probeDir}/a.txt`, Buffer.from('x\n', 'utf8'));
+  await client.remove(`${probeDir}/a.txt`);
+  const emptyList = await client.list(probeDir);
+  const stillThere = await client.stat(probeDir);
+  check(
+    '删掉目录里最后一个文件后，目录本身仍在',
+    emptyList.length === 0 && stillThere !== null,
+    `list=${emptyList.length} stat=${stillThere === null ? 'null' : 'ok'} → 界面该说「还没有备份包」，不是「目录不存在」`,
+  );
+  // 收尾：把探针目录删掉，别在用户 NAS 上留垃圾
+  let dirGone = false;
+  for (const candidate of [`${probeDir}/`, probeDir]) {
+    try {
+      await client.remove(candidate);
+    } catch (e) {
+      note(`DELETE ${candidate} 失败：${e?.message ?? e}`);
+      continue;
+    }
+    if ((await client.stat(probeDir).catch(() => null)) === null) {
+      dirGone = true;
+      break;
+    }
+  }
+  check('探针目录已清理干净', dirGone, dirGone ? '' : `未能删掉，请到 NAS 上手工删除 ${probeDir}`);
 
   console.log(`\n=== 汇总 ===`);
   const failed = results.filter((r) => !r.ok);

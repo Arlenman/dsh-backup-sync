@@ -41,7 +41,8 @@
     "e2e:cloud": "node scripts/cloud-e2e.mjs",
     "scan": "node scripts/scan-report.mjs",
     "guard": "node scripts/guard-report.mjs",
-    "e2e:nas": "node scripts/nas-e2e.mjs"
+    "e2e:nas": "node scripts/nas-e2e.mjs",
+    "e2e:real-nas": "node scripts/cloud-real.mjs"
   },
   "dsh": {
     "bundle": {

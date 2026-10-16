@@ -148,6 +148,42 @@ test('ensureDir：远端只读 → 403 原样报出', async () => {
   });
 });
 
+/**
+ * ★ 2026-10-16 在绿联 NAS 上实测到的形态（真机抓到的）：
+ *
+ * 那个 WebDAV 端点把若干共享目录拼成一个**只读的虚拟根**。在根下 MKCOL 一个不存在的
+ * 目录，服务器回的是 **405**（标准语义是「这个集合已经存在」），可目录**并没有被创建**；
+ * 紧接着往里面 PUT，又回 405。原来的 `ensureDir` 只看状态码，于是把它报成
+ * 「目录就绪（已存在）」，真机上表现为：界面说目录没问题，备份却在 PUT 那一步
+ * 抛一句 `服务器不接受 PUT（405）`，完全看不出真正的原因是「目录根本不存在」。
+ *
+ * 所以「已存在」不能只凭状态码，必须 PROPFIND 验证一次。
+ */
+test('★ ensureDir：MKCOL 回 405 但目录其实没建（只读虚拟根）→ 如实报错，不许谎报「已存在」', async () => {
+  await withServer({ readonlyRoot: true }, async ({ client, root }) => {
+    await assert.rejects(() => client.ensureDir('_newdir'), (err) => {
+      assert.equal(err.status, 405, '状态码照实带出来');
+      assert.match(err.message, /目录/, '要说明是「目录没建成」这件事');
+      assert.ok(
+        /只读|不允许|权限|虚拟根|先在/.test(err.message),
+        `要给出可操作的解释，实际是：${err.message}`,
+      );
+      return true;
+    });
+    await assert.rejects(() => stat(join(root, '_newdir')), '磁盘上确实不该有这个目录');
+  });
+});
+
+test('ensureDir：正常服务器上，已存在的目录仍然被放行（不能因为要验证就变得疑神疑鬼）', async () => {
+  await withServer({}, async ({ client }) => {
+    await client.ensureDir('keep');
+    const again = await client.ensureDir('keep');
+    assert.equal(again.ok, true);
+    assert.equal(again.created.length, 0);
+    assert.deepEqual(again.existed, ['keep/']);
+  });
+});
+
 // ───────────────────────── PUT / GET
 
 test('put：必须带 Content-Length，且值等于实际字节数', async () => {

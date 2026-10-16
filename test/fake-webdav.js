@@ -78,6 +78,9 @@ function readBody(req) {
  *   prefix?: string,                   XML 命名空间前缀：'D' | 'd' | 'lp1' | ''（默认命名空间）
  *   trailingSlashRedirect?: boolean,   true = 集合不带尾斜杠时 301（很多真服务器这样）
  *   readonly?: boolean,                true = 一切写操作 403
+ *   readonlyRoot?: boolean,            true = 只读的「虚拟根」：根下 MKCOL 回 405 但什么也不建，
+ *                                      根下 PUT 也 405（2026-10-16 在绿联 NAS 实测的真形态：
+ *                                      它的根是多个共享目录拼出来的虚拟根，不允许新建集合）
  *   davHeader?: string,                OPTIONS 返回的 DAV 头，默认 '1, 2'
  * }} opts
  */
@@ -92,6 +95,9 @@ export async function startFakeWebdav(opts = {}) {
   const nsAttr = prefix === '' ? 'xmlns="DAV:"' : `xmlns:${prefix}="DAV:"`;
   const trailingSlashRedirect = opts.trailingSlashRedirect !== false;
   const readonly = opts.readonly === true;
+  const readonlyRoot = opts.readonlyRoot === true;
+  /** 直接位于根下的路径（不含根自身）。 */
+  const isAtRoot = (segments) => segments.length <= 1;
 
   await mkdir(root, { recursive: true });
 
@@ -242,6 +248,9 @@ export async function startFakeWebdav(opts = {}) {
     if (method === 'MKCOL') {
       if (readonly) return finish(403);
       if (st !== null) return finish(405);
+      // 虚拟根：回 405（看起来像「已存在」）但目录根本没建 —— 客户端只看状态码
+      // 就会误判成「目录就绪」，随后 PUT 一句莫名其妙的 405。
+      if (readonlyRoot && isAtRoot(target.segments)) return finish(405);
       const parent = await stat(resolve(target.abs, '..')).catch(() => null);
       if (parent === null || !parent.isDirectory()) return finish(409);
       await mkdir(target.abs);
@@ -251,7 +260,9 @@ export async function startFakeWebdav(opts = {}) {
     if (method === 'PUT') {
       if (readonly) return finish(403);
       const parent = await stat(resolve(target.abs, '..')).catch(() => null);
-      if (parent === null || !parent.isDirectory()) return finish(409);
+      // 父目录不存在：标准服务器回 409，绿联那个虚拟根回的是 405（实测）。
+      // 两种都要能测，否则客户端很容易把 405 误读成「服务器不支持 PUT」。
+      if (parent === null || !parent.isDirectory()) return finish(readonlyRoot ? 405 : 409);
       if (st?.isDirectory()) return finish(405);
       const body = await readBody(req);
       const declared = Number(req.headers['content-length'] ?? NaN);

@@ -1062,7 +1062,8 @@ test('备份完成后把包名、大小、路径、sha256、边车校验结果�
 });
 
 test('展开某个模块能看到逐文件清单（含相对路径与体积），并且每一行都能点开看内容', () => {
-  const ui = { ...initialUi(), loading: false, state: sampleState(), expanded: { plugins: true } };
+  // 插件卡的「插件清单」与「文件清单」是两条独立链接，这里测的是后者。
+  const ui = { ...initialUi(), loading: false, state: sampleState(), expanded: { 'plugins:files': true } };
   const opened = [];
   const tree = renderFull(ui, { openFile: (moduleId, relPath) => opened.push([moduleId, relPath]) });
   const text = textOf(tree);
@@ -1218,6 +1219,266 @@ test('技能弹窗：复制技能名的反馈只出现在技能区，不串到�
   assert.equal(feeds.length, 1);
   assert.ok(textOf(feeds[0]).includes('已复制技能名：cdp-browser-automation'));
   assert.equal(findAll(tree, (n) => n.props?.['data-dbs-copyfeed'] === 'file').length, 0);
+});
+
+// ───────────────────────────────────────── 插件清单（列出插件，不是只列清单文件）
+
+/** 一份 /plugins 应答里的 plugins：五行覆盖「已启用 / 内置 / 仅依赖 / 未安装 / 本地目录」。 */
+function samplePlugins() {
+  return [
+    {
+      name: 'dsh-notify-me',
+      title: '通知提醒',
+      titleSource: 'zh',
+      version: '1.5.3',
+      spec: '^1.5.3',
+      description: '审批、提问、回复完成时弹系统通知',
+      kind: 'third-party',
+      bundled: true,
+      installed: true,
+      local: false,
+      dir: 'C:\\Users\\x\\.dsh\\profiles\\desktop\\node_modules\\dsh-notify-me',
+    },
+    {
+      name: '@deepseek-ai/dsh-base',
+      title: 'Base bundle',
+      titleSource: 'en',
+      version: '0.2.0-rc.2',
+      spec: null,
+      description: null,
+      kind: 'builtin',
+      bundled: true,
+      installed: false,
+      local: false,
+      dir: 'C:\\Users\\x\\.dsh\\profiles\\desktop\\node_modules\\@deepseek-ai\\dsh-base',
+    },
+    {
+      name: 'dsh-backup-sync',
+      title: 'dsh-backup-sync',
+      titleSource: 'name',
+      version: '0.2.0',
+      spec: 'link:D:/dsh-work/dsh-backup-sync',
+      description: '把本机 DSH 配置与技能同步到另一台机器',
+      kind: 'third-party',
+      bundled: true,
+      installed: true,
+      local: true,
+      dir: 'C:\\Users\\x\\.dsh\\profiles\\desktop\\node_modules\\dsh-backup-sync',
+    },
+    {
+      name: 'cosmokit',
+      title: 'cosmokit',
+      titleSource: 'name',
+      version: '4.0.4',
+      spec: '^4.0.4',
+      description: null,
+      kind: 'third-party',
+      bundled: false,
+      installed: true,
+      local: false,
+      dir: 'C:\\Users\\x\\.dsh\\profiles\\desktop\\node_modules\\cosmokit',
+    },
+    {
+      name: 'dsh-gone',
+      title: 'dsh-gone',
+      titleSource: 'name',
+      version: null,
+      spec: '^1.0.0',
+      description: null,
+      kind: 'third-party',
+      bundled: true,
+      installed: false,
+      local: false,
+      dir: 'C:\\Users\\x\\.dsh\\profiles\\desktop\\node_modules\\dsh-gone',
+    },
+  ];
+}
+
+/** 一份 /plugins 应答里的元信息。 */
+function samplePluginsMeta(over = {}) {
+  return {
+    profile: 'desktop',
+    profileDir: 'C:\\Users\\x\\.dsh\\profiles\\desktop',
+    bundles: ['@deepseek-ai/dsh-base', 'dsh-notify-me', 'dsh-backup-sync', 'dsh-gone'],
+    totals: { all: 5, enabled: 4, thirdParty: 4, standalone: 3, missing: 1 },
+    dependencyOnly: ['cosmokit'],
+    orphans: [],
+    ...over,
+  };
+}
+
+/** 插件卡展开、清清单已取到的界面。 */
+function pluginUi(over = {}) {
+  return {
+    ...initialUi(),
+    loading: false,
+    state: sampleState(),
+    expanded: { plugins: true },
+    plugins: samplePlugins(),
+    pluginsMeta: samplePluginsMeta(),
+    ...over,
+  };
+}
+
+test('★ 插件卡展开后列的是插件本身（名字 + 版本 + 状态），不是三个清单文件', () => {
+  const text = textOf(renderFull(pluginUi()));
+  assert.ok(text.includes('收起插件'), '展开按钮要换成「收起插件」');
+  assert.ok(text.includes('通知提醒'), '要能看到插件在设置里显示的那个名字');
+  assert.ok(text.includes('v1.5.3'), '版本要能看到');
+  assert.ok(text.includes('悬停看说明 · 单击查看详情 · 双击复制插件名'), '三种操作要教给用户');
+  assert.ok(text.includes('查看 2 个文件'), '文件清单是另一条链接，不能因为列了插件就消失');
+  assert.ok(!text.includes('收起文件'), '文件清单没展开就不该显示它的收起按钮');
+  assert.ok(!text.includes('pnpm-workspace.yaml'), '清单文件明细要留在文件链接里，不铺在插件行下面');
+});
+
+test('插件卡：清单还没取到时按钮说「列出插件」，不编一个数字出来', () => {
+  const text = textOf(renderFull({ ...initialUi(), loading: false, state: sampleState() }));
+  assert.ok(text.includes('列出插件'), '没取到清单时只能说「列出插件」');
+  assert.ok(!/列出 \d+ 个插件/.test(text), '数字要等真取到了才写');
+  assert.ok(!text.includes('悬停看说明'), '没展开就不该有清单');
+});
+
+test('插件卡：清单取到后收起，按钮要带上真正的数量', () => {
+  const text = textOf(renderFull({ ...pluginUi(), expanded: {} }));
+  assert.ok(text.includes('列出 5 个插件'), '数量取宿主给的插件行数，不是文件数');
+  assert.ok(!text.includes('收起插件'));
+});
+
+test('插件卡：三种状态都说清楚（没取 / 正在取 / 取失败），失败要能重试', () => {
+  const base = { ...pluginUi(), plugins: null, pluginsMeta: null };
+  const idle = renderFull(base);
+  assert.equal(findAll(idle, (n) => n.props?.['data-dbs-plugins'] === 'idle').length, 1);
+  assert.ok(textOf(idle).includes('展开后才会读取插件清单'));
+
+  const loading = renderFull({ ...base, pluginsLoading: true });
+  assert.equal(findAll(loading, (n) => n.props?.['data-dbs-plugins'] === 'loading').length, 1);
+  assert.ok(textOf(loading).includes('正在读取插件清单'));
+
+  const failedTree = renderFull({ ...base, pluginsError: 'HTTP 500' });
+  assert.equal(findAll(failedTree, (n) => n.props?.['data-dbs-plugins'] === 'error').length, 1);
+  const failed = textOf(failedTree);
+  assert.ok(failed.includes('插件清单读取失败'), '失败要有标题');
+  assert.ok(failed.includes('HTTP 500'), '要带上宿主给的原因');
+  assert.ok(failed.includes('备份时仍会照常打包'), '失败要说明不影响备份本身');
+  assert.ok(buttonByText(failedTree, '重试') !== null, '失败要能当场重试');
+});
+
+test('插件行：徽标要能一眼分出「已启用 / 仅依赖 / 未安装 / 内置 / 本地目录」', () => {
+  const tree = renderFull(pluginUi());
+  const rows = findAll(tree, (n) => typeof n.props?.['data-dbs-plugin'] === 'string');
+  assert.equal(rows.length, 5, '五行插件');
+  const byName = (name) => textOf(rows.find((r) => r.props['data-dbs-plugin'] === name));
+
+  const notify = byName('dsh-notify-me');
+  assert.ok(notify.includes('通知提醒'));
+  assert.ok(notify.includes('dsh-notify-me'), '标题来自语言文件时要同时给出包名，用户才能和 npm / 清单对上');
+  assert.ok(notify.includes('v1.5.3'));
+  assert.ok(notify.includes('已启用'));
+  assert.ok(!notify.includes('仅依赖') && !notify.includes('未安装'));
+
+  assert.ok(byName('@deepseek-ai/dsh-base').includes('内置'), '内置 bundle 要标出来（它不在 profile 的 node_modules 里）');
+  assert.ok(
+    byName('@deepseek-ai/dsh-base').includes('随内核提供'),
+    '内置 bundle 读不到版本是正常的，要说「随内核提供」，不能说「未安装」',
+  );
+  assert.ok(
+    !byName('@deepseek-ai/dsh-base').includes('未安装'),
+    '内置 bundle 本来就不在 profile 的 node_modules 里 —— 标成「未安装」会让每一台好机器都像坏了',
+  );
+
+  assert.ok(byName('cosmokit').includes('仅依赖'), '只在 dependencies 里的包宿主不会挂载');
+  assert.ok(byName('dsh-backup-sync').includes('本地目录'), 'link: 装的是本机目录，换机不能照搬');
+  assert.ok(byName('dsh-gone').includes('未安装'), 'bundles 里声明了但没装上');
+});
+
+test('插件行：悬停出说明；没有说明也不留空白', () => {
+  const tree = renderFull(pluginUi());
+  const rows = findAll(tree, (n) => typeof n.props?.['data-dbs-plugin'] === 'string');
+  const tip = (name) => rows.find((r) => r.props['data-dbs-plugin'] === name).props.title;
+  assert.equal(tip('dsh-notify-me'), '审批、提问、回复完成时弹系统通知');
+  assert.equal(tip('dsh-gone'), '（这个插件没有写说明）', '没有说明要明说，不能是空 tooltip');
+  assert.equal(rows.find((r) => r.props['data-dbs-plugin'] === 'cosmokit').props.className, 'dbs-skill');
+});
+
+test('插件卡：合计与两条提醒（仅依赖 / 装了但没写进清单）都要给', () => {
+  const text = textOf(renderFull(pluginUi()));
+  assert.ok(text.includes('4 个已启用'), '合计取 totals.enabled');
+  assert.ok(text.includes('共 5 个'));
+  assert.ok(text.includes('1 个声明了但没装上'), '缺包数量要说出来（只数第三方，内置 bundle 不算缺）');
+  assert.ok(text.includes('C:\\Users\\x\\.dsh\\profiles\\desktop'), '配置目录要给绝对路径，方便对照');
+  assert.ok(text.includes('另有 1 个包只是依赖'), '仅在 dependencies 里的要单独提一句');
+  assert.ok(text.includes('cosmokit'));
+
+  const orphan = textOf(
+    renderFull(pluginUi({ pluginsMeta: samplePluginsMeta({ orphans: ['dsh-leftover'] }) })),
+  );
+  assert.ok(orphan.includes('node_modules 里有 1 个 DSH 插件没写进清单'), '装了但清单里没声明的要点名');
+  assert.ok(orphan.includes('dsh-leftover'));
+});
+
+test('插件行的 onClick / onDoubleClick 分别接到 pluginClick / pluginDblClick', () => {
+  const calls = [];
+  const tree = renderFull(pluginUi(), {
+    pluginClick: (p) => calls.push(`click:${p.name}`),
+    pluginDblClick: (p) => calls.push(`dbl:${p.name}`),
+  });
+  const row = findAll(tree, (n) => n.props?.['data-dbs-plugin'] === 'dsh-notify-me')[0];
+  row.props.onClick();
+  row.props.onDoubleClick();
+  assert.deepStrictEqual(calls, ['click:dsh-notify-me', 'dbl:dsh-notify-me']);
+});
+
+test('插件弹窗：包名 / 版本 / 来源 / 是否启用 / 装在哪 / 说明，并只列这个插件的字段', () => {
+  const ui = { ...initialUi(), loading: false, state: sampleState(), plugin: samplePlugins()[0] };
+  const text = textOf(renderFull(ui));
+  assert.ok(text.includes('插件：通知提醒'));
+  assert.ok(text.includes('dsh-notify-me'));
+  assert.ok(text.includes('1.5.3'));
+  assert.ok(text.includes('^1.5.3'), '依赖里写的范围也要给，方便对照清单');
+  assert.ok(text.includes('已启用（在 profile 的 bundles 里，宿主会挂载它）'));
+  assert.ok(text.includes('C:\\Users\\x\\.dsh\\profiles\\desktop\\node_modules\\dsh-notify-me'), '安装位置要给绝对路径');
+  assert.ok(text.includes('审批、提问、回复完成时弹系统通知'));
+  assert.ok(text.includes('复制插件名'), '弹窗里也要能复制插件名');
+  assert.ok(text.includes('从 npm 装') === false, '不要写没根据的来源');
+});
+
+test('插件弹窗：没装上的插件要说清后果，不能只说一句「没装」', () => {
+  const gone = samplePlugins().find((p) => p.name === 'dsh-gone');
+  const text = textOf(renderFull({ ...initialUi(), loading: false, state: sampleState(), plugin: gone }));
+  assert.ok(text.includes('未安装（bundles 里声明了，但这台机器上没有它）'));
+  assert.ok(text.includes('依赖没装上'), '要说清后果：这个插件此刻是关着的');
+});
+
+test('插件弹窗：内置 bundle 读不到版本不算异常，别吓唬用户说「没装上」', () => {
+  const base = samplePlugins().find((p) => p.name === '@deepseek-ai/dsh-base');
+  const text = textOf(renderFull({ ...initialUi(), loading: false, state: sampleState(), plugin: base }));
+  assert.ok(text.includes('随内核提供'), '状态要说明它由内核挂载');
+  assert.ok(text.includes('DSH 内置 bundle（随内核走）'), '类型一行照旧');
+  assert.ok(!text.includes('依赖没装上'), '内置 bundle 不在 node_modules 是设计如此，不能报成依赖没装上');
+  assert.ok(!text.includes('这台机器上没有它'));
+});
+
+test('插件弹窗：复制插件名的反馈只出现在插件区，不串到技能 / 文件弹窗', () => {
+  const ui = {
+    ...initialUi(),
+    loading: false,
+    state: sampleState(),
+    plugin: samplePlugins()[0],
+    copyFeed: { plugin: { ok: true, how: 'clipboard', label: 'dsh-notify-me' } },
+  };
+  const tree = renderFull(ui);
+  const feeds = findAll(tree, (n) => n.props?.['data-dbs-copyfeed'] === 'plugin');
+  assert.equal(feeds.length, 1);
+  assert.ok(textOf(feeds[0]).includes('已复制插件名：dsh-notify-me'));
+  assert.equal(findAll(tree, (n) => n.props?.['data-dbs-copyfeed'] === 'skill').length, 0);
+});
+
+test('插件卡：文件清单是独立的一条链接，能单独展开（插件行与文件行互不遮挡）', () => {
+  const text = textOf(renderFull({ ...pluginUi(), expanded: { 'plugins:files': true } }));
+  assert.ok(text.includes('收起文件'), '文件清单自己也有展开态');
+  assert.ok(text.includes('列出 5 个插件'), '文件清单展开时插件清单仍是收起的');
+  assert.ok(text.includes('pnpm-lock.yaml'), '文件明细还在原处，能逐条点开');
+  assert.ok(!text.includes('悬停看说明'), '两个清单不互相带出');
 });
 
 // ───────────────────────────────────────── 文件内容弹窗

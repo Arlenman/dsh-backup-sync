@@ -120,6 +120,9 @@ pnpm 拉的是 codeload 从仓库树打的 tarball（锁文件里记的是 `gitH
 | ![导入](docs/images/03-import.png) | ![同步](docs/images/04-sync.png) |
 
 - **备份**：勾模块 → 填输出目录 → 打一个包（可选打包前跑校验）。
+  卡片展开后给的是**人话清单**，不是文件路径：技能卡一行一个技能，插件卡一行一个插件
+  （显示名 / 真正装上的版本 / `已启用 · 仅依赖 · 未安装 · 内置 · 本地目录` 徽标，悬停看说明、
+  单击开详情、双击复制包名），文件明细退成旁边一条「查看 N 个文件」。
 - **历史版本**：列出输出目录里的包（时间、体积、来源机器、模块数、文件数），
   可就地**校验**（比对 sha256）、**导入**、**复制路径**。
 - **导入**：选一个包 → 扫描 → 逐文件差异预览（新增 / 修改 / 删除 / 冲突）→ 逐项裁决 → 应用。
@@ -133,7 +136,7 @@ pnpm 拉的是 codeload 从仓库树打的 tarball（锁文件里记的是 `gitH
 | 模块 | 界面名 | 根目录 | 收录内容 | 默认 |
 | --- | --- | --- | --- | --- |
 | `skills` | 技能 | `<userHome>/.agents/skills` | 整棵技能树（按技能目录计数） | ✅ |
-| `plugins` | 插件 | `<dshHome>/profiles/<profile>/` | `package.json`、`pnpm-lock.yaml`、`.npmrc`、`pnpm-workspace.yaml` | ✅ |
+| `plugins` | 插件 | `<dshHome>/profiles/<profile>/` | `package.json`、`pnpm-lock.yaml`、`.npmrc`、`pnpm-workspace.yaml`（界面上另按清单列出**装了哪些插件**） | ✅ |
 | `config` | 配置 | `<dshHome>/profiles/<profile>/` 与 `<dshHome>/` | `cordis.patch.yml`、`settings.yaml`、`AGENTS.md` | ✅ |
 | `memory` | 记忆 | `<dshHome>/memories/` | `MEMORY.md` / `USER.md` / `KEY.md` / `daily/*.md` 等（**不含**待办文件） | ✅ |
 | `todo` | 待办 | `<dshHome>/memories/` | `TODOS-life.md`、`TODOS-work.md`、`projects/<hash>/TODOS.md`、`daily/YYYY-MM-DD.todo.md` | ✅ |

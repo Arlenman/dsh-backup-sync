@@ -51,7 +51,7 @@ test('路由表：新增四条路径都合法、方法不重复', () => {
     assert.equal(new Set(r.methods).size, r.methods.length, `${r.path} 方法不能重复`);
     for (const m of r.methods) assert.ok(['GET', 'POST'].includes(m), `${r.path} 的方法 ${m} 不合法`);
   }
-  for (const p of ['/schedule', '/schedule/run-now', '/skills', '/file']) {
+  for (const p of ['/schedule', '/schedule/run-now', '/skills', '/plugins', '/file']) {
     assert.ok(paths.includes(`${ROUTE_PREFIX}${p}`), `缺路由 ${p}`);
   }
 });
@@ -241,6 +241,64 @@ test('/skills：技能库不存在时回空清单，不报错', async () => {
     assert.equal(status, 200);
     assert.deepEqual(body.skills, []);
     assert.equal(body.count, 0);
+  });
+});
+
+// ───────────────────────── /plugins ─────────────────────────
+
+test('★ /plugins：界面按这份应答逐个渲染插件行，字段一个都不能少', async () => {
+  await withFixture(async (fx) => {
+    const profileDir = join(fx.roots.dshHome, 'profiles', fx.roots.profile);
+    // 夹具的 profile 清单只有 bundles；这里补一条依赖，用来验证「只在 dependencies
+    // 里 = 宿主不会挂载」的标法（真正装的包也要在清单里声明，否则算孤儿）。
+    await writeFile(
+      join(profileDir, 'package.json'),
+      `${JSON.stringify({ name: fx.roots.profile, dependencies: { 'dsh-notify-me': '^1.5.3' }, dsh: { profile: { bundles: ['a', 'b'] } } }, null, 2)}\n`,
+      'utf8',
+    );
+    await mkdir(join(profileDir, 'node_modules', 'dsh-notify-me', 'locale'), { recursive: true });
+    await writeFile(
+      join(profileDir, 'node_modules', 'dsh-notify-me', 'package.json'),
+      `${JSON.stringify({ name: 'dsh-notify-me', version: '1.5.3', dsh: { bundle: { patch: 'x.yml' } } })}\n`,
+      'utf8',
+    );
+    await writeFile(
+      join(profileDir, 'node_modules', 'dsh-notify-me', 'locale', 'zh.json'),
+      `${JSON.stringify({ meta: { title: '通知提醒', description: '审批、提问、回复完成时弹系统通知' } })}\n`,
+      'utf8',
+    );
+
+    const { status, body } = await finder(fx).get('/plugins');
+    assert.equal(status, 200);
+    assert.equal(body.profile, fx.roots.profile);
+    assert.equal(body.profileDir, profileDir);
+    assert.deepStrictEqual(body.bundles, ['a', 'b'], '夹具的 bundles 原样回传');
+
+    const notify = body.plugins.find((p) => p.name === 'dsh-notify-me');
+    assert.equal(notify.title, '通知提醒');
+    assert.equal(notify.titleSource, 'zh');
+    assert.equal(notify.version, '1.5.3');
+    assert.equal(notify.description, '审批、提问、回复完成时弹系统通知');
+    assert.equal(notify.bundled, false, '夹具的 bundles 里没有它 → 界面标「仅依赖」');
+    assert.equal(notify.installed, true);
+    assert.equal(notify.kind, 'third-party');
+    assert.equal(typeof notify.dir, 'string');
+
+    assert.deepStrictEqual(body.dependencyOnly, ['dsh-notify-me']);
+    assert.equal(body.totals.all, 3);
+    assert.equal(body.totals.enabled, 2, 'bundles 里的两个（夹具里都没装）');
+    assert.equal(body.totals.missing, 2);
+    assert.deepStrictEqual(body.orphans, [], '装了但没写进清单的才叫孤儿，它写在 dependencies 里');
+  });
+});
+
+test('/plugins：profile 还没同步过来（没有 package.json）时如实报错，不是空清单', async () => {
+  await withFixture({ empty: true }, async (fx) => {
+    const { status, body } = await finder(fx).get('/plugins');
+    assert.equal(status, 200, '这是业务答案，不是 HTTP 错误');
+    assert.equal(body.ok, false);
+    assert.ok(String(body.manifestError).includes('package.json'));
+    assert.deepStrictEqual(body.plugins, []);
   });
 });
 

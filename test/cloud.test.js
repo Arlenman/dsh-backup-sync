@@ -287,6 +287,43 @@ test('listRemote：标注是否自有、本地是否存在、远端是否更新'
   });
 });
 
+/**
+ * ★ 这条是上面那条测试的**假红根源**，也是真用户的日常路径。
+ *
+ * 刚打完包紧接着上传时，本地文件 mtime 与远端副本 mtime 相差**不到一秒**：
+ * 远端那份是 PUT 时由服务器新建的，天然比本地晚一点点；而 WebDAV 的
+ * `getlastmodified` 只有**秒级**精度（HTTP-date），于是「远端 11.000 > 本地 10.900」
+ * 成立 → 刚上传完自己的包，界面就提示「云端有更新的一份」，纯属误报。
+ * 真机（绿联 NAS）上同理：手工上传/自动上传之后立刻刷新就会看到这条假提示。
+ *
+ * 所以判定必须留一点余量：只有远端**明确**比本地新（超过 1 秒的写入/精度抖动）才算。
+ * 上面那条测试本身有约 1/10 的概率随机变红（上传恰好跨过整秒），就是漏了这个余量。
+ */
+test('★ listRemote：远端只比本地新不到 1 秒不算「远端更新」（WebDAV 时间只有秒级精度）', async () => {
+  await withCloud({}, async ({ roots, outDir }) => {
+    const made = await seedArchive(outDir, 'dsh-sync-20261015-121212.tar.gz', 1024);
+    await uploadArchive(roots, { outDir });
+    const base = await listRemote(roots, { outDir });
+    const remoteMs = base.files[0].mtimeMs;
+
+    // 本地比远端"旧" 400 毫秒：这正是刚上传完的真实形态（服务器写副本更晚）
+    const slightlyOld = new Date(remoteMs - 400);
+    await utimes(made.path, slightlyOld, slightlyOld);
+    const near = await listRemote(roots, { outDir });
+    assert.equal(
+      near.files[0].remoteNewer,
+      false,
+      '几百毫秒的差是写入延迟与秒级精度造成的，不能报「远端更新」',
+    );
+
+    // 明确拉开（本地比远端旧 10 秒）→ 必须报出来
+    const clearlyOld = new Date(remoteMs - 10_000);
+    await utimes(made.path, clearlyOld, clearlyOld);
+    const far = await listRemote(roots, { outDir });
+    assert.equal(far.files[0].remoteNewer, true, '差得明显时仍然要提示「远端更新」');
+  });
+});
+
 // ───────────────────────── 下载
 
 test('downloadRemote：下载后 sha256 与源包一致；非自有命名拒绝', async () => {

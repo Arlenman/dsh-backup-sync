@@ -13,8 +13,11 @@
  *   … srv.url … srv.requests … await srv.stop();
  */
 import { createServer } from 'node:http';
+import { appendFileSync } from 'node:fs';
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const METHODS = ['OPTIONS', 'PROPFIND', 'MKCOL', 'PUT', 'GET', 'HEAD', 'DELETE'];
 
@@ -95,6 +98,31 @@ export async function startFakeWebdav(opts = {}) {
   /** @type {{method:string,path:string,headers:any,bodyBytes:number,status:number}[]} */
   const requests = [];
 
+  /**
+   * 记一条请求。可选地把**脱敏后**的摘要追加到日志文件（CLI 模式用）：
+   * 授权头是 `Basic base64(用户:口令)`，落盘就等于把口令写进明文日志，
+   * 所以只记方法与长度这类元信息，绝不记 authorization。
+   */
+  function record(entry) {
+    requests.push(entry);
+    if (typeof opts.logPath === 'string' && opts.logPath !== '') {
+      const h = entry.headers ?? {};
+      appendFileSync(
+        opts.logPath,
+        `${JSON.stringify({
+          method: entry.method,
+          path: entry.path,
+          status: entry.status,
+          bodyBytes: entry.bodyBytes,
+          contentLength: h['content-length'] ?? null,
+          transferEncoding: h['transfer-encoding'] ?? null,
+          depth: h.depth ?? null,
+          contentType: h['content-type'] ?? null,
+        })}\n`,
+      );
+    }
+  }
+
   const expectedAuth = `Basic ${Buffer.from(`${username}:${password}`, 'utf8').toString('base64')}`;
 
   function authorized(req) {
@@ -153,19 +181,19 @@ export async function startFakeWebdav(opts = {}) {
     try {
       target = fsPathOf(root, rootPath, pathname);
     } catch {
-      requests.push({ method, path: pathname, headers: req.headers, bodyBytes: 0, status: 400 });
+      record({ method, path: pathname, headers: req.headers, bodyBytes: 0, status: 400 });
       res.writeHead(400).end('bad path');
       return;
     }
 
     const finish = (status, headers, body) => {
-      requests.push({ method, path: pathname, headers: req.headers, bodyBytes: 0, status });
+      record({ method, path: pathname, headers: req.headers, bodyBytes: 0, status });
       res.writeHead(status, headers ?? {});
       res.end(body ?? '');
     };
 
     if (!authorized(req)) {
-      requests.push({ method, path: pathname, headers: req.headers, bodyBytes: 0, status: 401 });
+      record({ method, path: pathname, headers: req.headers, bodyBytes: 0, status: 401 });
       challenge(res);
       return;
     }
@@ -179,7 +207,7 @@ export async function startFakeWebdav(opts = {}) {
 
     // 集合不带尾斜杠 → 301（真服务器常见行为，客户端必须能跟）
     if (trailingSlashRedirect && st?.isDirectory() && !pathname.endsWith('/')) {
-      requests.push({ method, path: pathname, headers: req.headers, bodyBytes: 0, status: 301 });
+      record({ method, path: pathname, headers: req.headers, bodyBytes: 0, status: 301 });
       res.writeHead(301, { Location: `${pathname}/` });
       res.end();
       return;
@@ -207,7 +235,7 @@ export async function startFakeWebdav(opts = {}) {
         }
       }
       await multiStatus(res, entries);
-      requests.push({ method, path: pathname, headers: req.headers, bodyBytes: 0, status: 207 });
+      record({ method, path: pathname, headers: req.headers, bodyBytes: 0, status: 207 });
       return;
     }
 
@@ -229,7 +257,7 @@ export async function startFakeWebdav(opts = {}) {
       const declared = Number(req.headers['content-length'] ?? NaN);
       if (Number.isFinite(declared) && declared !== body.length) {
         // 夹具自己也要防一手：声明长度与实收不一致就是客户端错了
-        requests.push({ method, path: pathname, headers: req.headers, bodyBytes: body.length, status: 400 });
+        record({ method, path: pathname, headers: req.headers, bodyBytes: body.length, status: 400 });
         res.writeHead(400).end('length mismatch');
         return;
       }
@@ -303,4 +331,90 @@ export async function startFakeWebdav(opts = {}) {
       await new Promise((ok) => server.close(() => ok()));
     },
   };
+}
+
+// ─────────────────────────── CLI：把假服务器单独当进程跑起来
+//
+//   node test/fake-webdav.js --port 19700 --dir D:\tmp\dav --user u --pass p
+//
+// 端到端脚本（Task 6）需要一个「真进程、真端口、真 Basic 认证」的服务器：同进程内
+// 起服务器会让人分不清失败是客户端的问题还是服务器没起来。这个模式不依赖测试框架，
+// 打印一行 READY 供调用方等待，收到 SIGINT/SIGTERM 就退出。
+//
+// `--dir` 是服务器内容落的本地目录（= 远端文件系统的根），不传就用系统临时目录。
+// 退出信号默认只认 SIGINT/SIGTERM —— **不要**顺手把 stdin 关闭也当退出信号：调用方
+// 常常是 stdin 已经关掉的子进程（PowerShell 的 Start-Job、CI 里的 spawn），那样服务器
+// 会刚打印 READY 就退出，症状是连接被拒（curl 返回 000）而日志看起来完全正常。
+// 需要「父进程一关管道就跟着退」的调用方显式加 `--exit-on-stdin-close`。
+function parseCliArgs(argv) {
+  const out = { port: 0, dir: null, rootPath: '/dav/', user: 'u', pass: 'p', log: null, exitOnStdinClose: false };
+  for (let i = 0; i < argv.length; i += 1) {
+    const key = argv[i];
+    const val = argv[i + 1];
+    const take = () => {
+      i += 1;
+      return val;
+    };
+    if (key === '--port') out.port = Number(take());
+    else if (key === '--dir') out.dir = take();
+    else if (key === '--path') out.rootPath = take();
+    else if (key === '--user') out.user = take();
+    else if (key === '--pass') out.pass = take();
+    else if (key === '--log') out.log = take();
+    else if (key === '--exit-on-stdin-close') out.exitOnStdinClose = true;
+    else if (key === '--help' || key === '-h') out.help = true;
+  }
+  return out;
+}
+
+async function main() {
+  const args = parseCliArgs(process.argv.slice(2));
+  if (args.help === true) {
+    process.stdout.write(
+      'usage: node test/fake-webdav.js [--port 19700] [--dir <root>] [--path /dav/] [--user u] [--pass p] [--log <file>] [--exit-on-stdin-close]\n',
+    );
+    return;
+  }
+  const dir = args.dir ?? join(tmpdir(), 'dsh-fake-webdav');
+  const srv = await startFakeWebdav({
+    root: dir,
+    port: Number.isFinite(args.port) ? args.port : 0,
+    rootPath: args.rootPath,
+    username: args.user,
+    password: args.pass,
+    logPath: args.log,
+  });
+  // 机器可读的一行：调用方 grep 出 url 就能用，不必猜端口。
+  process.stdout.write(`READY url=${srv.url} root=${srv.root} user=${args.user}\n`);
+
+  const bye = async () => {
+    await srv.stop().catch(() => {});
+    process.exit(0);
+  };
+  process.on('SIGINT', bye);
+  process.on('SIGTERM', bye);
+  if (args.exitOnStdinClose === true) {
+    process.stdin.on('end', bye);
+    process.stdin.on('close', bye);
+    process.stdin.resume();
+  }
+}
+
+/**
+ * 只有「直接被 node 执行」时才自动起服务。
+ *
+ * 两个坑都在这里挡掉：
+ * ① `node --test` 不带参数时会把 `test/` 下的**每个**文件都当测试文件跑（Node 的默认
+ *    匹配规则是 `**\/test\/**\/*.js`），于是这个文件会被当成测试文件执行一遍 —— 它的
+ *    main() 会老老实实起一台服务器并常驻，整个测试进程就永远不退出（表现为 npm test
+ *    卡死、无输出）。测试子进程里 Node 会设 `NODE_TEST_CONTEXT`，据此跳过。
+ * ② 显式 `node --test test/fake-webdav.js` 同样会命中上面的情况，所以不能只判断 argv[1]。
+ */
+const underTestRunner = typeof process.env.NODE_TEST_CONTEXT === 'string' && process.env.NODE_TEST_CONTEXT !== '';
+
+if (!underTestRunner && process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    process.stderr.write(`fake-webdav: ${err?.stack ?? err}\n`);
+    process.exit(1);
+  });
 }

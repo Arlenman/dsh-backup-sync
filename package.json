@@ -37,7 +37,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test",
+    "test": "node --test test/*.test.js",
+    "e2e:cloud": "node scripts/cloud-e2e.mjs",
     "scan": "node scripts/scan-report.mjs",
     "guard": "node scripts/guard-report.mjs"
   },

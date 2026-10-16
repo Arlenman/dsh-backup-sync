@@ -393,6 +393,42 @@ test('★ /cloud/state：回配置与可上传的本地包，但**永远没有�
   });
 });
 
+test('★ 备份目录留空时：列表接口回的就是「打一份新备份」会写进去的那个默认目录', async () => {
+  await withCloudRoutes(async ({ post, ...fx }) => {
+    // 全新安装的默认态：settings.outDir = null，界面上目录框也留空 → 请求不带 outDir。
+    // 2026-10-16 在真机上暴露的缺陷：写盘那侧走 defaultArchiveDir（D:\dsh-backups-sync），
+    // 列表这侧拿到的是 undefined → 界面永远显示「还没有备份包」、云端上传下拉空着。
+    const before = await post('/cloud/state', {});
+    assert.equal(typeof before.body.localDir, 'string', 'localDir 不能是 undefined');
+    assert.ok(before.body.localDir.length > 0, `localDir 不能为空：${before.body.localDir}`);
+    // 与宿主自己公布的「默认目录」必须一致 —— 不在测试里重算一遍默认值（那等于把实现抄一遍）
+    const state0 = await post('/state', {});
+    assert.equal(before.body.localDir, state0.body.settings.defaultOutDir);
+
+    // 不带 outDir 打一份包 —— 等价于界面上目录框空着的点击行为
+    const backup = await runBackup(fx.roots, { moduleIds: ['skills'] });
+    assert.equal(backup.ok, true);
+    assert.equal(
+      backup.archive.path.startsWith(before.body.localDir),
+      true,
+      `包要落在列表接口报的那个目录里：包=${backup.archive.path} 目录=${before.body.localDir}`,
+    );
+
+    // 打完再看：列表接口必须能看见它（同一目录、同一口径）
+    const after = await post('/cloud/state', {});
+    assert.equal(after.body.localDir, before.body.localDir);
+    assert.ok(
+      after.body.localArchives.some((a) => a.name === backup.archive.name),
+      '刚打出来的包必须出现在可上传列表里',
+    );
+
+    // /state 与 /settings 也要给同一个目录，界面上的占位提示才不会指错地方
+    const state = await post('/state', {});
+    assert.equal(state.body.outDir, before.body.localDir);
+    assert.equal(state.body.settings.outDir, before.body.localDir);
+  });
+});
+
 test('★ /cloud/config + /cloud/password：配置与密码分两个接口，密码只进不出', async () => {
   await withCloudRoutes(async ({ post, ...fx }) => {
     const saved = await post('/cloud/config', {

@@ -14,7 +14,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { startFakeWebdav } from './fake-webdav.js';
 import { withFixture } from './fixture.js';
@@ -264,12 +264,26 @@ test('listRemote：标注是否自有、本地是否存在、远端是否更新'
     assert.equal(row.isOwn, true);
     assert.equal(row.localExists, true);
     assert.equal(row.bytes, made.bytes);
+    // 时间字段：WebDAV 条目叫 mtime（Date），这里必须读成毫秒数并渲染成本地时间。
+    // 之前写成 e.mtimeMs 恒为 null → 界面「修改时间」永远显示 —，且下面那条
+    // remoteNewer 的提示永远不会出现（2026-10-16 在真实 NAS 上才暴露）。
+    assert.equal(typeof row.mtimeMs, 'number', '远端时间必须读出来');
+    assert.match(row.mtimeLocal, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/, '远端时间要渲染成本地时间串');
+    assert.equal(row.remoteNewer, false, '本机刚打出来的包，不该被标成「远端更新」');
+
+    // 本地那份的 mtime 拨到 1 小时前 → 远端就比本地新了，界面该提示「远端更新」
+    const old = new Date(row.mtimeMs - 3600_000);
+    await utimes(made.path, old, old);
+    const newer = await listRemote(roots, { outDir });
+    assert.equal(newer.files[0].remoteNewer, true, '远端更新时间更晚时必须标出来');
 
     // 把本地包删掉 → localExists 变 false
     await rm(made.path, { force: true });
     const gone = await listRemote(roots, { outDir });
     assert.equal(gone.files[0].localExists, false);
     assert.equal(gone.files[0].isOwn, true);
+    assert.equal(gone.files[0].remoteNewer, true, '本地没有这份包时，远端一律算「更新」');
+    assert.equal(typeof gone.files[0].mtimeMs, 'number', '本地没有也不该影响远端时间的读取');
   });
 });
 

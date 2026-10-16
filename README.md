@@ -3,6 +3,7 @@
 > 给 **DeepSeek Harness** 的**备份 / 恢复 / 换机同步**插件：
 > 把技能、插件、配置、记忆、待办打成一个 `tar.gz`，换台电脑**按模块增量导入**，
 > 靠一份基线库做三方合并 —— 不覆盖你在这台机器上新改的东西。
+> 也能直接把包推到**你自己的 WebDAV 空间**（绿联 / 群晖 / 坚果云 / Nextcloud…），换机时下载回来。
 
 [![CI](https://github.com/Arlenman/dsh-backup-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/Arlenman/dsh-backup-sync/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -21,6 +22,7 @@
 - [增量导入：基线三方合并](#增量导入基线三方合并)
 - [两条红线](#两条红线)
 - [定时备份](#定时备份)
+- [云端备份（WebDAV）](#云端备份webdav)
 - [HTTP 接口](#http-接口)
 - [开发](#开发)
 - [已知限制](#已知限制)
@@ -123,6 +125,8 @@ pnpm 拉的是 codeload 从仓库树打的 tarball（锁文件里记的是 `gitH
 - **导入**：选一个包 → 扫描 → 逐文件差异预览（新增 / 修改 / 删除 / 冲突）→ 逐项裁决 → 应用。
   应用前自动把当前状态快照到 `<输出目录>/pre-restore-<时间戳>/`。
 - **同步**：把包推到「同步目录」（OneDrive / 坚果云 / 群晖 / U 盘都行），带 sha256 校验。
+  下面还有一张**云端（WebDAV）**卡片：填地址 / 账号 / 口令 / 远端目录 →「保存并测试连接」→
+  上传 / 列出远端 / 下载到本机 / 删远端（详见[云端备份](#云端备份webdav)）。
 
 ## 六个模块
 
@@ -221,9 +225,42 @@ theirs = 包里的状态
 - 定时范围默认跟随「备份」页当前勾选的模块，可 pin 成固定集合；
 - **对话永远不会进定时包。**
 
+## 云端备份（WebDAV）
+
+「同步」页签里有一张**云端（WebDAV）**卡片。填四个字段就能用：
+
+| 字段 | 例子 | 说明 |
+| --- | --- | --- |
+| 云端地址 | `http://192.168.3.1:5005/` | NAS 上 WebDAV 服务给出的地址（**要带协议**，端口按 NAS 说明填） |
+| 账号 / 口令 | `dsh` / `******` | 口令建议用 NAS 里给应用生成的**专用密码**，不要用登录密码 |
+| 远端目录 | `dsh-backup` | 云端根目录下的一个子目录，**第一次上传会自动创建** |
+| 传完自动上传 | 开关 | 打开后每次「立即跑一次」或定时打包成功，自动把最新的包传上去 |
+
+点「保存并测试连接」会当场告诉你通不通（口令错会明确显示 `401`）；界面上还有
+**传最新一份上去 / 列出远端 / 下载到本机 / 删远端** 四个动作。
+
+换机流程：新机器装好插件 → 填**同一个** WebDAV 地址与目录 → 「列出远端」→ 挑一份
+→「下载到本机」→ 到「导入」页签选它 → 预览 → 应用。
+
+安全约定（这几条是硬编码的，不是提示）：
+
+- 口令**单独**存在 `<dshHome>/backup-sync/cloud-credentials.json`（权限 `0600`），
+  不进设置文件、不进日志、界面里读不回来（只显示「已保存」）。
+- 这个凭据文件名在黑名单里 —— **既不会被打进备份包，也不会被导入**。
+- 远端只认**自己打的包**：名字必须匹配 `dsh-sync-<时间戳>.tar.gz`。别的名字（包括
+  `../` 这类路径穿越）一律拒绝，**而且拒绝发生在发请求之前**。
+- 上传/下载/删除都会核对 `sha256` 边车文件；下载采用「先写临时文件再改名」，
+  同名包默认不覆盖（要显式确认）。
+- ⚠️ **备份包里是明文**（配置、技能、待办、记忆）。所以云端目录必须是**私有**的，
+  别用公开分享目录。要加密请自己在外面套一层（如 restic / rclone crypt）。
+
+兼容性：只依赖 WebDAV 标准动词（`OPTIONS` / `PROPFIND` / `MKCOL` / `PUT` / `GET` / `DELETE`），
+Basic 认证，不依赖任何厂商私有 API。NAS 上记得**先把 WebDAV 服务打开**。
+真机实测的服务器方言记在 [`docs/notes/webdav-servers.md`](docs/notes/webdav-servers.md)。
+
 ## HTTP 接口
 
-宿主半边在 `/api/dsh-backup-sync` 下注册了 12 条路由（都走 DSH 自带的连接鉴权）：
+宿主半边在 `/api/dsh-backup-sync` 下注册了 20 条路由（都走 DSH 自带的连接鉴权）：
 
 ```
 GET  /state               GET  /settings          POST /settings
@@ -231,14 +268,21 @@ POST /backup              POST /import/preview    POST /import/apply
 POST /verify              POST /sync/push         GET  /sync/list
 POST /schedule            POST /schedule/run-now
 GET  /skills              GET  /file
+GET  /cloud/state         POST /cloud/config      POST /cloud/password
+POST /cloud/test          POST /cloud/upload      POST /cloud/list
+POST /cloud/download      POST /cloud/remove
 ```
+
+云端那 8 条**失败时也返回 HTTP 200**，把业务结论放在 `{ok:false, error}` 里
+（`callApi` 才能把「口令不对」这类人话原样显示到卡片上），抛异常才走顶栏报错。
 
 ## 开发
 
 ```bash
 git clone https://github.com/Arlenman/dsh-backup-sync.git
 cd dsh-backup-sync
-npm test          # node --test，423 项，零依赖、不需要 install
+npm test              # node --test，483 项，零依赖、不需要 install（约 7 秒）
+npm run e2e:cloud     # 云端链路端到端：真起一台假 WebDAV 服务器，65 项断言
 ```
 
 目录：
@@ -253,10 +297,13 @@ lib/apply.js      应用导入计划（带快照回滚）
 lib/guard.js      凭据黑名单（永不进包）
 lib/schedule.js   定时配置归一化与描述（纯函数）
 lib/scheduler.js  宿主进程内定时器（心跳、到点跑一次、轮换旧包）
-lib/routes.js     12 条 HTTP 路由
+lib/webdav.js     WebDAV 客户端（零依赖，自己实现请求与 XML 解析）
+lib/cloud.js      云端编排层（凭据隔离、只认自己的包、上传/下载/删除）
+lib/routes.js     20 条 HTTP 路由
 docs/notes/       逆向内核得到的插件契约（模块加载器、settings 槽位）
 docs/plans/       设计文档与实施计划（含逐条决策理由）
-test/             node:test 单测（含跨平台路径断言）
+scripts/          开发期验收脚本（含云端端到端）
+test/             node:test 单测（含跨平台路径断言与假 WebDAV 服务器）
 ```
 
 仓库里的三份文档对写 DSH 插件的人可能有用：
@@ -273,6 +320,7 @@ test/             node:test 单测（含跨平台路径断言）
 | --- | --- | --- |
 | `scan-report.mjs` | 只读扫描，打印各模块文件数/体积 | 不写 |
 | `guard-report.mjs` | 校验凭据黑名单是否真的拦住了 | 不写 |
+| `cloud-e2e.mjs` | 云端链路端到端（起真进程的假 WebDAV 服务器，`--report` 可落成 markdown） | 只写仓库下 `.tmp-cloud-e2e-*`，跑完删除（`--keep` 保留） |
 | `backup-now.mjs` | 命令行打一个包 | `--out` 指定目录，**并更新真实基线库**（`--no-baseline` 可跳过） |
 | `verify-restore.mjs` | 拿真实包在空目录里跑完整导入并逐文件核对 | 只写仓库下 `.tmp-restore-*`，跑完删除 |
 
@@ -283,6 +331,9 @@ test/             node:test 单测（含跨平台路径断言）
   不会做字段级合并（除了插件清单的 JSON）。
 - 定时器跑在宿主进程里，DSH 退出即停（这是有意的，见上）。
 - 界面半边是手写的 CJS bundle（本机没有打包器），所以没有 JSX、没有 TS。
+- 云端目前**只有 WebDAV 一种后端**（传输层是分开写的，加 S3 / 对象存储属于新增一个 `lib/cloud-*.js`，
+  不影响现有路径）。认证目前只支持 Basic（Digest 会明确报「暂不支持」）。
+- 云端**不自动合并**：远端只是包的存放处，冲突判断仍在导入那一侧做。
 - **`.npmrc` / `.yarnrc` 既不进包、也不导入**（按凭据类文件名拦截，而且里面的 `store-dir`
   本来就是机器专属路径 —— 实测把它导到另一台机器会让 pnpm 直接 `ERR_PNPM_UNEXPECTED_STORE`）。
   代价：目标机器若依赖 profile 级 `.npmrc` 里的镜像源 / 代理，导入后要手动补一次。
@@ -296,6 +347,9 @@ test/             node:test 单测（含跨平台路径断言）
 - **Three-way merge import**: a local baseline records the hashes of the last backup, so importing
   on another machine never silently overwrites changes made there. Conflicts show a per-file diff.
 - **Credentials never enter an archive** (deny-list of credential filenames/suffixes).
+- **WebDAV cloud sync**: upload archives to your own WebDAV space (UGREEN / Synology / Nutstore /
+  Nextcloud) and pull them back on the new machine. The password lives in its own `0600` file,
+  only self-made archive names are accepted (path traversal is rejected before any request is sent).
 - **Zero npm runtime dependencies** (system `tar` does the packing), `tar.gz` + sha256 sidecar, settings entry under **Settings → 备份同步**.
 
 ```bash

@@ -1,6 +1,6 @@
 {
   "name": "dsh-backup-sync",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "备份同步 —— 可视化备份/恢复 DSH 资产（技能、插件、配置、记忆、待办、对话），并支持带基线的增量导入",
   "keywords": [
     "dsh",

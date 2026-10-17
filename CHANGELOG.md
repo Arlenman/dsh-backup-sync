@@ -3,7 +3,7 @@
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [未发布]
+## [0.2.0] - 2026-10-17
 
 ### 新增
 
@@ -41,7 +41,7 @@
 - **`npm test` 会卡死**：Node 默认的测试文件匹配规则是 `**/test/**/*.js`，于是 `test/fake-webdav.js`
   被当成测试文件执行、起了一台常驻服务器，整个测试进程永不退出（无输出、无报错）。测试脚本改为显式
   `node --test test/*.test.js`，并给该文件加了「在测试子进程里不自动起服务」的闸（`NODE_TEST_CONTEXT`）。
-  现在 `npm test` 约 7 秒跑完 483 项。
+  现在 `npm test` 约 7 秒跑完 529 项。
 - **`ensureDir` 会谎报「目录已存在 / 新建成功」**（真机踩到，绿联 NAS）：UGREEN 的 WebDAV 根目录是
   只读的虚拟根（把多个共享目录拼在一起），对根下 `MKCOL` 回 `405` **但不真的建目录**，于是插件的
   「确保目录存在」以为建好了，紧接着 `PUT` 被服务器回 405 拒掉，界面只说「PUT 失败」。
@@ -61,6 +61,10 @@
   现在分两类讲明白 —— 文件名本身就是凭据（`.credentials*` / `id_rsa` / `auth.json` …），
   或文件里可能藏着凭据与机器专属路径（`.env` / `.npmrc` / `.yarnrc`），并说明这是设计如此、
   不需要用户做任何事。
+- **同步页签的云端卡片把毫秒时间戳摆到脸上**：「上次测试 / 上次上传」原来直接渲染宿主写的
+  `at`（epoch 毫秒），真机上显示成「上次测试 1792204738211」「上次上传 … · 1792204791660」。
+  改为读宿主已经算好的 `atLocal`；老状态文件里没有 `atLocal` 时按本机时区补一份同格式的时间，
+  实在没有时间就写「时间未知」，绝不把数字原样吐出来。
 
 ## [0.1.0] - 2026-10-14
 
@@ -108,4 +112,5 @@
 - 定时器跑在宿主进程内，DSH 退出即停。
 - 界面半边是手写 CJS bundle，无 JSX / TS。
 
+[0.2.0]: https://github.com/Arlenman/dsh-backup-sync/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Arlenman/dsh-backup-sync/releases/tag/v0.1.0

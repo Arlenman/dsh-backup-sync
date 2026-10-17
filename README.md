@@ -68,13 +68,13 @@ DSH 的「资产」散落在**两个地方**：
 
 ```bash
 # 从 GitHub 装（推荐锁 tag，可复现）
-dsh plugin --profile web add github:Arlenman/dsh-backup-sync#v0.1.0
+dsh plugin --profile web add github:Arlenman/dsh-backup-sync#v0.2.0
 
 # 跟 main 分支走
 dsh plugin --profile web add github:Arlenman/dsh-backup-sync
 
 # 或直接用发行版里的 tar.gz
-dsh plugin --profile web add https://github.com/Arlenman/dsh-backup-sync/releases/download/v0.1.0/dsh-backup-sync-0.1.0.tgz
+dsh plugin --profile web add https://github.com/Arlenman/dsh-backup-sync/releases/download/v0.2.0/dsh-backup-sync-0.2.0.tgz
 ```
 
 桌面版（Electron）在 **设置 → 插件** 里粘贴上面任意一条即可。
@@ -82,21 +82,23 @@ dsh plugin --profile web add https://github.com/Arlenman/dsh-backup-sync/release
 **换台电脑（家里另一台）就填这一条**：
 
 ```
-github:Arlenman/dsh-backup-sync#v0.1.0
+github:Arlenman/dsh-backup-sync#v0.2.0
 ```
 
-这条路已经实测过（2026-10-15，拿上面那条 spec 对**真仓库**跑 `pnpm add`，51.5 秒装完）：
-pnpm 拉的是 codeload 从仓库树打的 tarball（锁文件里记的是 `gitHosted: true` + sha512 integrity），
-装出来 **22 个文件**（`lib/*.js` 18 个 + `package.json` + `cordis.patch.yml` + `README.md` + `LICENSE`），
-与 Release 里那个 `.tgz` **逐个文件、逐字节一致**（22/22，sha256 全等）；
-解析到的提交是 `289819f`（= tag `v0.1.0`），装出来的 `lib/index.js` 用 node 直接 import 就能加载。
+这条路已经实测过（2026-10-15，拿 `github:Arlenman/dsh-backup-sync#v0.1.0` 对**真仓库**跑 `pnpm add`，
+51.5 秒装完）：pnpm 拉的是 codeload 从仓库树打的 tarball（锁文件里记的是 `gitHosted: true` +
+sha512 integrity），当时装出来 **22 个文件**（`lib/*.js` 18 个 + `package.json` + `cordis.patch.yml`
++ `README.md` + `LICENSE`），与 Release 里那个 `.tgz` **逐个文件、逐字节一致**（22/22，sha256 全等）；
+解析到的提交是 `289819f`（= 当时的 tag `v0.1.0`），装出来的 `lib/index.js` 用 node 直接 import 就能加载。
+`v0.2.0` 的包是 **25 个文件**（`lib/*.js` 21 个 + `package.json` + `cordis.patch.yml` + `README.md` + `LICENSE`，
+打包后 **130,583 字节**），**安装路径一字未变**。
 仓库里**没有 `prepare` / `prepublish` / `postinstall` 脚本、没有 `dependencies`**，
 `lib/` 是提交进仓库的现成 JS ⇒ **目标机器不需要构建，也不需要装任何依赖**。
 
 两个前提：
 
 - 目标机器要能连上 `github.com`。插件管理器在装 git 依赖前有 **5 秒** github.com 预检，
-  之后 pnpm 拉 `codeload.github.com` 的 tarball（**60 秒** idle 超时）。包本体约 150 KB，慢网也够。
+  之后 pnpm 拉 `codeload.github.com` 的 tarball（**60 秒** idle 超时）。包本体约 130 KB，慢网也够。
 - 装完**重启一次 DSH**（宿主半边不热重载，见下）。
 
 > **暂未发布到 npm**，所以 `dsh plugin --profile web add dsh-backup-sync`
@@ -250,6 +252,11 @@ theirs = 包里的状态
 
 也可以走同步页签：「列出远端」→「下载到本机」→ 再回「导入」页签选它 —— 两条路等价。
 
+![导入页签的「备份包」下拉里直接挑云端的包](docs/images/05-cloud-import.png)
+
+上图是真机截的：下拉里选中的就是云端那份（`云端 · 2026-10-17 10:39:51 · 本机已有`），
+下面一行说明云端一共几份、点「分析差异」会发生什么。
+
 安全约定（这几条是硬编码的，不是提示）：
 
 - 口令**单独**存在 `<dshHome>/backup-sync/cloud-credentials.json`（权限 `0600`），
@@ -361,7 +368,7 @@ test/             node:test 单测（含跨平台路径断言与假 WebDAV 服�
 - **Zero npm runtime dependencies** (system `tar` does the packing), `tar.gz` + sha256 sidecar, settings entry under **Settings → 备份同步**.
 
 ```bash
-dsh plugin --profile web add github:Arlenman/dsh-backup-sync#v0.1.0
+dsh plugin --profile web add github:Arlenman/dsh-backup-sync#v0.2.0
 ```
 
 Requires DSH `0.2.0-rc.2` and Node.js ≥ 22. MIT licensed.

@@ -2281,6 +2281,235 @@ test('导入结果：有失败项时改成醒目提示，并把每条错误列�
   assert.ok(text.includes('无（本次没有覆盖任何已有文件）'), '没有快照要说清楚是为什么');
 });
 
+// ─────────────────────────── 导入页签：把云端（WebDAV）的包也列进「备份包」
+
+/** 云端列目录的一份包 —— 形状与 `/cloud/list` 的 files 一致。 */
+function sampleCloudFile(over = {}) {
+  return {
+    name: 'dsh-sync-20261015-210000.tar.gz',
+    bytes: 181_900,
+    bytesHuman: '177.6 KB',
+    mtimeMs: 1_762_000_000_000,
+    mtimeLocal: '2026-10-15 21:00:04',
+    isOwn: true,
+    localExists: false,
+    localBytes: null,
+    localSha256: null,
+    remoteNewer: true,
+    ...over,
+  };
+}
+
+/** 导入页签里那个「备份包」下拉。 */
+function importSelect(tree) {
+  return findAll(tree, (n) => n.type === 'select')[0];
+}
+
+test('★ 导入下拉：云端那几份也列出来，分「本机 / 云端」两组，云端项的值带 cloud: 前缀', () => {
+  const local = [
+    { name: 'dsh-sync-20261017-103937.tar.gz', path: 'D:\\b\\dsh-sync-20261017-103937.tar.gz', bytesHuman: '181 KB', mtimeLocal: '2026-10-17 10:39:37' },
+  ];
+  const ui = {
+    ...initialUi(),
+    loading: false,
+    tab: 'import',
+    state: sampleState({ archives: local }),
+    importCloud: {
+      ok: true,
+      url: 'http://100.66.1.1:5005/',
+      remoteDir: 'dsh-backup',
+      dirMissing: false,
+      files: [
+        sampleCloudFile({ name: 'dsh-sync-20261015-180337.tar.gz', mtimeLocal: '2026-10-15 18:03:37', localExists: true }),
+        sampleCloudFile({ name: 'dsh-sync-20261013-192512.tar.gz', mtimeLocal: '2026-10-13 19:25:12' }),
+      ],
+    },
+  };
+  const tree = renderFull(ui);
+  const select = importSelect(tree);
+  assert.ok(select, '有云端包时必须有下拉');
+
+  const groups = findAll(select, (n) => n.type === 'optgroup');
+  assert.deepEqual(groups.map((g) => g.props.label), ['本机', '云端（WebDAV）']);
+
+  const byValue = new Map(
+    findAll(select, (n) => n.type === 'option').map((o) => [o.props.value, textOf(o)]),
+  );
+  // 本机那组的值仍是裸包名 —— 历史版本页的「导入」按钮直接拿包名，不能变。
+  assert.ok(byValue.has('dsh-sync-20261017-103937.tar.gz'), `本机项的值要保留裸包名，实得：${[...byValue.keys()]}`);
+  assert.ok(byValue.has('cloud:dsh-sync-20261015-180337.tar.gz'), '云端项要带 cloud: 前缀，避免与本机同名包撞值');
+  assert.ok(byValue.get('cloud:dsh-sync-20261015-180337.tar.gz').includes('本机已有'), '本机已经有一份要说清');
+  assert.ok(byValue.get('cloud:dsh-sync-20261013-192512.tar.gz').includes('本机没有'), '本机没有的也要说清');
+  assert.ok(byValue.get('cloud:dsh-sync-20261013-192512.tar.gz').includes('2026-10-13 19:25:12'), '时间要显示');
+});
+
+test('★ 导入下拉：本机一份都没有时也要给下拉 —— 换机场景就是「本地空、云端有」', () => {
+  const ui = {
+    ...initialUi(),
+    loading: false,
+    tab: 'import',
+    state: sampleState({ archives: [] }),
+    importCloud: { ok: true, dirMissing: false, files: [sampleCloudFile()] },
+  };
+  const text = textOf(renderFull(ui));
+  assert.ok(importSelect(renderFull(ui)), '云端有包就必须渲染下拉，不能退化成「没有包」提示');
+  assert.ok(text.includes('本机备份目录里还没有包'), `要说清本机是空的，实得：${text}`);
+  assert.ok(!text.includes('备份目录里没有包，可在下面直接填一个包的绝对路径'), '云端有包时说「没有包」是错的');
+});
+
+test('导入下拉：选了云端那份，「分析差异」就该能点', () => {
+  const ui = {
+    ...initialUi(),
+    loading: false,
+    tab: 'import',
+    state: sampleState({ archives: [] }),
+    importCloud: { ok: true, files: [sampleCloudFile()] },
+    importSource: 'cloud:dsh-sync-20261015-210000.tar.gz',
+  };
+  const go = buttonByText(renderFull(ui), '分析差异');
+  assert.equal(go.length, 1);
+  assert.equal(go[0].props.disabled, false);
+});
+
+test('★ 导入下拉：云端读不出来时如实说一句，本机选项照常可用（不许整块消失）', () => {
+  const ui = {
+    ...initialUi(),
+    loading: false,
+    tab: 'import',
+    state: sampleState({ archives: [{ name: 'a.tar.gz', bytesHuman: '1 KB', mtimeLocal: '2026-10-17 10:00:00' }] }),
+    importCloud: null,
+    importCloudError: '列不出远端：认证失败（HTTP 401）',
+  };
+  const tree = renderFull(ui);
+  const text = textOf(tree);
+  assert.ok(text.includes('云端备份没读出来'), `要说清云端这次没读到，实得：${text}`);
+  assert.ok(text.includes('401'), '原因要如实带上');
+  assert.ok(text.includes('本机备份照常可选'), '要告诉用户本机那部分没受影响');
+  assert.ok(importSelect(tree), '本机有包时下拉必须还在');
+});
+
+test('导入下拉：正在读云端时说清在等什么；读回来几份要说清会自动下载', () => {
+  const base = {
+    ...initialUi(),
+    loading: false,
+    tab: 'import',
+    state: sampleState({ archives: [{ name: 'a.tar.gz', bytesHuman: '1 KB', mtimeLocal: '2026-10-17 10:00:00' }] }),
+  };
+  const waiting = textOf(renderFull({ ...base, importCloudLoading: true }));
+  assert.ok(waiting.includes('正在读取云端备份'), `实得：${waiting}`);
+
+  const ready = textOf(
+    renderFull({ ...base, importCloud: { ok: true, files: [sampleCloudFile(), sampleCloudFile({ name: 'b.tar.gz', localExists: true })] } }),
+  );
+  assert.ok(ready.includes('云端 2 份'), `实得：${ready}`);
+  assert.ok(ready.includes('自动下载'), '要说明本机没有的会先自动下载');
+});
+
+test('★ 解析导入目标：云端那份本机没有 → 先下载，再按裸包名分析（执行导入要用同一个名字）', async () => {
+  const calls = [];
+  const call = async (path, body) => {
+    calls.push([path, body]);
+    return { ok: true, name: 'x.tar.gz', path: 'D:\\dsh-backups-sync\\x.tar.gz', bytes: 1024, verified: true };
+  };
+  const seen = [];
+  const ui = {
+    ...initialUi(),
+    loading: false,
+    state: sampleState({ archives: [] }),
+    importCloud: { ok: true, files: [sampleCloudFile({ name: 'x.tar.gz' })] },
+    importSource: 'cloud:x.tar.gz',
+  };
+  const target = await internals().resolveImportTarget(ui, call, { onDownload: (name) => seen.push(name) });
+
+  assert.equal(calls.length, 1, '只该发一次下载请求');
+  assert.equal(calls[0][0], '/cloud/download');
+  assert.equal(calls[0][1].name, 'x.tar.gz');
+  assert.equal(target.archiveName, 'x.tar.gz', '分析阶段要用裸包名，不能把 cloud: 前缀带下去');
+  assert.equal(target.archivePath, undefined);
+  assert.equal(target.download.path, 'D:\\dsh-backups-sync\\x.tar.gz');
+  assert.equal(target.download.verified, true);
+  assert.deepEqual(seen, ['x.tar.gz'], '下载前要能切一次忙碌提示「正在从云端下载」');
+});
+
+test('★ 解析导入目标：云端那份本机已有 → 不重复下载，直接分析本机那份', async () => {
+  const calls = [];
+  const call = async (path, body) => {
+    calls.push([path, body]);
+    return {};
+  };
+  const seen = [];
+  const ui = {
+    ...initialUi(),
+    loading: false,
+    state: sampleState({ archives: [{ name: 'x.tar.gz', bytesHuman: '1 KB', mtimeLocal: '2026-10-17 10:00:00' }] }),
+    importCloud: { ok: true, files: [sampleCloudFile({ name: 'x.tar.gz', localExists: true })] },
+    importSource: 'cloud:x.tar.gz',
+  };
+  const target = await internals().resolveImportTarget(ui, call, { onDownload: (name) => seen.push(name) });
+
+  assert.deepEqual(calls, [], '本机已有就不该再下一遍（大包几百 MB）');
+  assert.deepEqual(seen, []);
+  assert.equal(target.archiveName, 'x.tar.gz');
+  assert.equal(target.download, null);
+});
+
+test('解析导入目标：本机项与「或绝对路径」原样透传，不碰云端接口', async () => {
+  const calls = [];
+  const call = async (path, body) => {
+    calls.push([path, body]);
+    return {};
+  };
+
+  const local = await internals().resolveImportTarget(
+    { ...initialUi(), importSource: 'a.tar.gz', importPath: '' },
+    call,
+  );
+  assert.deepEqual(calls, []);
+  assert.equal(local.archiveName, 'a.tar.gz');
+  assert.equal(local.archivePath, undefined);
+  assert.equal(local.download, null);
+
+  const byPath = await internals().resolveImportTarget(
+    { ...initialUi(), importSource: '', importPath: '  D:\\x\\y.tar.gz  ' },
+    call,
+  );
+  assert.equal(byPath.archiveName, undefined);
+  assert.equal(byPath.archivePath, 'D:\\x\\y.tar.gz', '路径要 trim，但不要改写');
+  assert.equal(byPath.download, null);
+
+  const nothing = await internals().resolveImportTarget({ ...initialUi(), importSource: '', importPath: '' }, call);
+  assert.equal(nothing.archiveName, undefined);
+  assert.equal(nothing.archivePath, undefined);
+});
+
+test('★ 云端下载完要报出落在哪儿（并说清有没有核对哈希）', () => {
+  const ui = {
+    ...initialUi(),
+    loading: false,
+    state: sampleState(),
+    tab: 'import',
+    importSource: 'x.tar.gz',
+    importFlight: { name: 'x.tar.gz', path: 'D:\\dsh-backups-sync\\x.tar.gz', bytes: 181_900, verified: true },
+  };
+  const text = textOf(renderFull(ui));
+  assert.ok(text.includes('已从云端下载'), `实得：${text}`);
+  assert.ok(text.includes('D:\\dsh-backups-sync\\x.tar.gz'), '要给出落盘路径');
+  assert.ok(text.includes('哈希核对通过'), '核对过了就要说核对过了');
+
+  const unverified = textOf(renderFull({ ...ui, importFlight: { name: 'y.tar.gz', path: 'D:\\b\\y.tar.gz', bytes: 1, verified: false } }));
+  assert.ok(unverified.includes('远端没有 .sha256'), `没得核对时必须说出来，实得：${unverified}`);
+});
+
+test('导入下拉：换包/换路径要把上一次的下载结论与差异结果一起清掉，别让旧结论留在屏幕上', () => {
+  const next = internals().importPickState({ importSource: 'a.tar.gz', importPath: '' });
+  assert.equal(next.importSource, 'a.tar.gz');
+  assert.equal(next.importFlight, null, '上一次「已从云端下载」的结论必须清掉');
+  assert.equal(next.preview, null);
+  assert.equal(next.applyResult, null);
+  // 用键数判断：bundle 跑在独立的 vm 上下文里，跨 realm 的 {} 过不了 deepStrictEqual 的原型比对。
+  assert.equal(Object.keys(next.resolutions).length, 0);
+});
+
 // ───────────────────────────────────────── 同步页签
 
 test('同步页签：说清这是「复制到文件夹」，WebDAV 也在这一屏', () => {

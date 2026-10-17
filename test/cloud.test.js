@@ -21,7 +21,7 @@ import { withFixture } from './fixture.js';
 import { settingsPathOf } from '../lib/settings.js';
 import { inspectPath } from '../lib/guard.js';
 import { sha256File, sha256Text } from '../lib/hash.js';
-import { runBackup } from '../lib/service.js';
+import { runBackup, previewImport } from '../lib/service.js';
 import {
   CLOUD_CREDENTIALS_BASENAME,
   cloudView,
@@ -396,5 +396,39 @@ test('集成：runBackup 真产出的包能原样上云并拉回来', async () =
     const pulled = join(srv.root, 'dsh-backup', backup.archive.name);
     assert.equal(await sha256File(pulled), backup.archive.sha256, '云端那一份必须与本地逐字节相同');
     assert.equal((await listRemote(roots, { outDir })).files[0].isOwn, true);
+  });
+});
+
+test('★ 集成：导入页签那条链路 —— 云端有、本机没有 → 下载 → 只给裸包名就能分析差异', async () => {
+  await withCloud({}, async ({ roots, outDir }) => {
+    // 1) 云上先有一份真包（跑一次真备份再上传，保证是可解析的真归档）
+    const backup = await runBackup(roots, { moduleIds: ['skills'], outDir });
+    await uploadArchive(roots, { outDir, name: backup.archive.name });
+
+    // 2) 模拟换机：本机那份没了，只剩云端
+    await rm(join(outDir, backup.archive.name), { force: true });
+
+    const listed = await listRemote(roots, { outDir });
+    const row = listed.files.find((f) => f.name === backup.archive.name);
+    assert.ok(row, '云端那份要在列表里');
+    assert.equal(row.localExists, false, '本机没有 → 下拉里显示「本机没有」，客户端据此决定下载');
+
+    // 3) 客户端 resolveImportTarget 在「本机没有」时发的就是这一发
+    const got = await downloadRemote(roots, backup.archive.name, { outDir });
+    assert.equal(got.ok, true);
+    assert.equal(got.verified, true, '带 .sha256 的包下载后必须核对通过');
+
+    // 4) 关键接缝：分析阶段只给裸包名（不带 cloud: 前缀、不给绝对路径），
+    //    宿主必须能在本机备份目录里找到刚下下来的那一份 —— 找不到就是「点了没反应」。
+    const preview = await previewImport(roots, { archiveName: backup.archive.name, outDir, allowDelete: false });
+    assert.equal(preview.ok, true);
+    assert.equal(preview.archive.name, backup.archive.name);
+    assert.ok(Array.isArray(preview.actions) && preview.actions.length > 0, '要真的产出一份计划');
+
+    // 5) 下完之后再看一眼列表：那一份必须变成「本机已有」，否则用户每点一次都会重复下载。
+    const again = await listRemote(roots, { outDir });
+    const after = again.files.find((f) => f.name === backup.archive.name);
+    assert.equal(after.localExists, true);
+    assert.equal(after.remoteNewer, false, '刚下下来的那份不该被标成「远端更新」');
   });
 });

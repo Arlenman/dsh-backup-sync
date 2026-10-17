@@ -2586,7 +2586,7 @@ function sampleCloud(over = {}) {
     credentialsCorrupted: false,
     ready: true,
     lastUpload: null,
-    lastCheck: { at: '2026-10-15 21:03:11', ok: true },
+    lastCheck: { at: 1_762_000_000_000, atLocal: '2026-10-15 21:03:11', ok: true },
     settingsPath: 'C:\\Users\\x\\.dsh\\backup-sync\\settings.json',
     credentialsPath: 'C:\\Users\\x\\.dsh\\backup-sync\\cloud-credentials.json',
     remoteUrl: 'http://192.168.3.9:5005/dav/dsh-backup',
@@ -2872,11 +2872,54 @@ test('云端：上传成功后卡片的「上次上传」跟着更新', () => {
       state: sampleState(),
       tab: 'sync',
       cloud: sampleCloud({
-        lastUpload: { at: '2026-10-15 21:31:02', name: 'dsh-sync-20261015-210000.tar.gz', bytes: 181_900, remoteDir: 'dsh-backup' },
+        lastUpload: {
+          at: 1_762_000_180_000,
+          atLocal: '2026-10-15 21:31:02',
+          name: 'dsh-sync-20261015-210000.tar.gz',
+          bytes: 181_900,
+          remoteDir: 'dsh-backup',
+        },
       }),
     }),
   );
   assert.ok(text.includes('dsh-sync-20261015-210000.tar.gz · 2026-10-15 21:31:02'));
+});
+
+test('★ 云端卡片的时间一律是人话，绝不许把 epoch 毫秒摆到脸上', () => {
+  // 真机截图里出现过「上次测试 1792204738211」「上次上传 … · 1792204791660」——
+  // 宿主写的 at 是 epoch 毫秒，界面必须读 atLocal。
+  const text = textOf(
+    renderFull({
+      ...initialUi(),
+      loading: false,
+      state: sampleState(),
+      tab: 'sync',
+      cloud: sampleCloud({
+        lastCheck: { at: 1_792_204_738_211, atLocal: '2026-10-17 10:38:58', ok: true },
+        lastUpload: {
+          at: 1_792_204_791_660,
+          atLocal: '2026-10-17 10:39:51',
+          name: 'dsh-sync-20261017-103937.tar.gz',
+          bytes: 483_956,
+        },
+      }),
+    }),
+  );
+  assert.ok(text.includes('2026-10-17 10:38:58'), '上次测试要显示 atLocal');
+  assert.ok(text.includes('dsh-sync-20261017-103937.tar.gz · 2026-10-17 10:39:51'), '上次上传要显示 atLocal');
+  assert.equal(/17\d{11}/.test(text), false, `界面上不该出现 epoch 毫秒：${text.match(/\d{10,}/g)}`);
+});
+
+test('云端卡片时间：老状态文件缺 atLocal 时按本机时区补，缺 at 时给兜底文案', () => {
+  const { stampOf } = internals();
+  const legacy = stampOf({ at: 1_792_204_738_211 }, '还没测过');
+  assert.match(legacy, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/, `补出来的时间要长得像时间：${legacy}`);
+  assert.equal(legacy, stampOf({ at: 1_792_204_738_211, atLocal: '' }, '还没测过'), '空字符串不算有效 atLocal');
+  assert.equal(stampOf(null, '还没测过'), '还没测过');
+  assert.equal(stampOf(undefined, '还没测过'), '还没测过');
+  assert.equal(stampOf({ at: '2026-10-15 21:03:11' }, '时间未知'), '时间未知', 'at 是字符串时不许原样吐出来');
+  assert.equal(stampOf({}, '时间未知'), '时间未知');
+  assert.equal(stampOf({ at: Number.NaN }, '时间未知'), '时间未知');
 });
 
 test('★ 整个面板不出现 undefined / NaN / [object Object]（六种状态全查一遍）', () => {
